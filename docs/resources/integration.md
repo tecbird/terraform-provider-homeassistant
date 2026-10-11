@@ -50,7 +50,7 @@ variable "shelly_password" {
 ### Optional
 
 - `sensitive_steps` (Dynamic, Sensitive) More fields, in the same shape as `steps`, that are hidden in plan output, e.g. `{ user = { password = var.password } }`. They are merged into the step of the same `step_id`; on a field in both, this one wins. They are still stored in the state.
-- `steps` (Dynamic) The answers to the config flow's forms, as an object from `step_id` to the form's fields, e.g. `{ user = { host = "192.168.1.50" } }`. Each form Home Assistant shows is answered by the step with its `step_id`; a form without fields is answered by `{}`. If Home Assistant asks for a step that is not given, or rejects the data, the flow is aborted and nothing is created. Changing the steps replaces the entry, except right after an import, when they are only recorded. Creating the entry needs them. An imported entry can do without them: they stay null until set, which is what `tofu plan -generate-config-out` writes, and removing them later only forgets them.
+- `steps` (Dynamic) The answers to the config flow's forms, as an object from `step_id` to the form's fields, e.g. `{ user = { host = "192.168.1.50" } }`. Each form Home Assistant shows is answered by the step with its `step_id`; a form without fields is answered by `{}`. If Home Assistant asks for a step that is not given, or rejects the data, the flow is aborted and nothing is created. Changing the steps replaces the entry, except right after an import, when they are only recorded. Creating the entry needs a step, here or in `sensitive_steps`. An imported entry can do without them: they stay null until set, which is what `tofu plan -generate-config-out` writes, and removing both later only forgets them.
 
 ### Read-Only
 

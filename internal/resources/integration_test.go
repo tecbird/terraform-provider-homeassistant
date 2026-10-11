@@ -86,39 +86,55 @@ func TestStepsValidator(t *testing.T) {
 	}
 }
 
-// integrationData returns the schema and a raw `homeassistant_integration` with the given steps,
-// or a null object for nil steps.
-func integrationData(t *testing.T, steps *dyntype.Value) (resource.SchemaResponse, tftypes.Value) {
+// inputs is the `steps` and `sensitive_steps` of a `homeassistant_integration`.
+type inputs struct{ steps, sensitive dyntype.Value }
+
+// integrationData returns the schema and a raw `homeassistant_integration` with the given inputs,
+// or a null object for nil inputs.
+func integrationData(t *testing.T, in *inputs) (resource.SchemaResponse, tftypes.Value) {
 	t.Helper()
 	ctx := t.Context()
 	var sr resource.SchemaResponse
 	NewIntegration().Schema(ctx, resource.SchemaRequest{}, &sr)
 	s := tfsdk.State{Schema: sr.Schema, Raw: tftypes.NewValue(sr.Schema.Type().TerraformType(ctx), nil)}
-	if steps != nil {
-		if d := s.SetAttribute(ctx, stepsPath, *steps); d.HasError() {
+	if in != nil {
+		if d := s.SetAttribute(ctx, stepsPath, in.steps); d.HasError() {
+			t.Fatal(d)
+		}
+		if d := s.SetAttribute(ctx, sensitiveStepsPath, in.sensitive); d.HasError() {
 			t.Fatal(d)
 		}
 	}
 	return sr, s.Raw
 }
 
-// Changed steps replace the entry only if both the prior and the planned steps are set: null
-// steps mean the provider does not know them, after an import or after they were removed.
+// Changed steps replace the entry only if the prior and the planned inputs each hold a step, in
+// `steps` or `sensitive_steps`: otherwise the provider does not know the steps, after an import or
+// after both were removed.
 func TestStepsChanged(t *testing.T) {
 	steps := mustDyn(t, `{"user": {"host": "a"}}`)
 	changed := mustDyn(t, `{"user": {"host": "b"}}`)
+	secret := mustDyn(t, `{"user": {"api_key": "a"}}`)
+	secretChanged := mustDyn(t, `{"user": {"api_key": "b"}}`)
 	null := dyntype.NewNull()
+	empty := mustDyn(t, `{}`)
 	unknown := dyntype.Value{DynamicValue: basetypes.NewDynamicUnknown()}
 	cases := map[string]struct {
-		prior, planned dyntype.Value
+		prior, planned inputs
 		want           bool
 	}{
-		"changed":             {prior: steps, planned: changed, want: true},
-		"to unknown":          {prior: steps, planned: unknown, want: true},
-		"after import":        {prior: null, planned: changed},
-		"after import, empty": {prior: null, planned: mustDyn(t, `{"user": {}}`)},
-		"removed":             {prior: steps, planned: null},
-		"null to null":        {prior: null, planned: null},
+		"changed":                    {prior: inputs{steps, null}, planned: inputs{changed, null}, want: true},
+		"to unknown":                 {prior: inputs{steps, null}, planned: inputs{unknown, null}, want: true},
+		"after import":               {prior: inputs{null, null}, planned: inputs{changed, null}},
+		"after import, empty step":   {prior: inputs{null, null}, planned: inputs{mustDyn(t, `{"user": {}}`), null}},
+		"after import, secrets only": {prior: inputs{null, null}, planned: inputs{null, secret}},
+		"removed":                    {prior: inputs{steps, null}, planned: inputs{null, null}},
+		"removed, secrets left {}":   {prior: inputs{steps, secret}, planned: inputs{null, empty}},
+		"null to null":               {prior: inputs{null, null}, planned: inputs{null, null}},
+		"secrets only, changed":      {prior: inputs{null, secret}, planned: inputs{null, secretChanged}, want: true},
+		"secrets only, removed":      {prior: inputs{null, secret}, planned: inputs{null, null}},
+		"steps moved to secrets":     {prior: inputs{steps, null}, planned: inputs{null, secret}, want: true},
+		"steps removed, secrets":     {prior: inputs{steps, secret}, planned: inputs{null, secret}, want: true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -139,21 +155,27 @@ func TestStepsChanged(t *testing.T) {
 	}
 }
 
-// A plan that creates the entry needs steps; updating or destroying an imported one does not.
+// A plan that creates the entry needs a step, in `steps` or `sensitive_steps`; updating or
+// destroying an imported one does not.
 func TestIntegrationModifyPlan(t *testing.T) {
 	steps := mustDyn(t, `{"user": {}}`)
+	secret := mustDyn(t, `{"user": {"api_key": "hunter2"}}`)
 	null := dyntype.NewNull()
+	empty := mustDyn(t, `{}`)
 	unknown := dyntype.Value{DynamicValue: basetypes.NewDynamicUnknown()}
 	cases := map[string]struct {
-		state, plan *dyntype.Value // nil: no object, i.e. a create or a destroy
+		state, plan *inputs // nil: no object, i.e. a create or a destroy
 		wantErr     bool
 	}{
-		"create with steps":         {plan: &steps},
-		"create with unknown steps": {plan: &unknown},
-		"create without steps":      {plan: &null, wantErr: true},
-		"update without steps":      {state: &null, plan: &null},
-		"forget steps":              {state: &steps, plan: &null},
-		"destroy without steps":     {state: &null},
+		"create with steps":           {plan: &inputs{steps, null}},
+		"create with secrets only":    {plan: &inputs{null, secret}},
+		"create with unknown steps":   {plan: &inputs{unknown, null}},
+		"create with unknown secrets": {plan: &inputs{null, unknown}},
+		"create without steps":        {plan: &inputs{null, null}, wantErr: true},
+		"create with empty secrets":   {plan: &inputs{null, empty}, wantErr: true},
+		"update without steps":        {state: &inputs{null, null}, plan: &inputs{null, null}},
+		"forget steps":                {state: &inputs{steps, secret}, plan: &inputs{null, null}},
+		"destroy without steps":       {state: &inputs{null, null}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
