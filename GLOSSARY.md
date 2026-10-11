@@ -79,6 +79,10 @@ ADR-0012.
 **Dashboard** — A Lovelace dashboard. It has *metadata* (`url_path`, title, icon, sidebar
 visibility) and a *config* (views → sections → cards).
 
+**Default dashboard** — The built-in "Overview" dashboard. It has no `url_path` (the `lovelace/*`
+commands address it by leaving the field out), no metadata the provider manages, and only a
+*config*. Without a saved config, HA generates it automatically.
+
 **`url_path`** — The URL segment of a dashboard. It must contain a hyphen.
 
 **`dashboard_id`** — HA's internal id of a dashboard: `slugify(url_path)`, so `my-home` becomes

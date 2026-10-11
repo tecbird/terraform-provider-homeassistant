@@ -61,7 +61,7 @@ Which operation uses which transport:
 | Floor / area / label registry | WS | `config/<x>_registry/list|create|update|delete` |
 | Entity / device registry | WS | `config/entity_registry/get|update`, `config/device_registry/list|update` |
 | Input helpers | WS | `<domain>/list|create|update|delete` (id field `<domain>_id`) |
-| Dashboards | WS | `lovelace/dashboards/list|create|update|delete`, `lovelace/config`, `lovelace/config/save` |
+| Dashboards | WS | `lovelace/dashboards/list|create|update|delete`, `lovelace/config`, `lovelace/config/save|delete` |
 
 ## Inventory
 
@@ -91,6 +91,7 @@ Which operation uses which transport:
 | `homeassistant_scene` | user-chosen | [automations.md](automations.md) |
 | `homeassistant_input_boolean`, `_number`, `_text`, `_select`, `_datetime`, `_button` | generated | [helpers.md](helpers.md) |
 | `homeassistant_dashboard` | `url_path` | [dashboards.md](dashboards.md) |
+| `homeassistant_default_dashboard` | singleton (`default`) | [dashboards.md](dashboards.md) |
 | `homeassistant_integration` | `entry_id` | [integrations.md](integrations.md) |
 | `homeassistant_esphome`, `homeassistant_mqtt` | `entry_id` | [integrations.md](integrations.md) |
 
