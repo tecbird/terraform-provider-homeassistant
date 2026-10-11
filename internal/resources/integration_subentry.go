@@ -104,9 +104,9 @@ func (r *integrationSubentryResource) Schema(_ context.Context, _ resource.Schem
 					"takes its value from the step with the form's `step_id`, else from any step " +
 					"that has it, and fields the form does not show are left out. Otherwise a " +
 					"change replaces the subentry. Right after an import the steps are only recorded. " +
-					"Creating the subentry needs them. An imported subentry can do without them: " +
-					"they stay null until set, which is what `tofu plan -generate-config-out` " +
-					"writes, and removing them later only forgets them.",
+					"Creating the subentry needs them or `sensitive_steps`. An imported subentry " +
+					"can do without both: they stay null until set, which is what `tofu plan " +
+					"-generate-config-out` writes, and removing both later only forgets them.",
 				CustomType:    dyntype.Type{},
 				Optional:      true,
 				Validators:    []validator.Dynamic{stepsValidator{}},
@@ -141,19 +141,29 @@ func (r *integrationSubentryResource) Schema(_ context.Context, _ resource.Schem
 // subentryStepsChanged requires replacement for changed steps, unless they are only recorded
 // after an import or forgotten, or the subentry is reconfigured instead.
 func subentryStepsChanged(ctx context.Context, req planmodifier.DynamicRequest, resp *dynamicplanmodifier.RequiresReplaceIfFuncResponse) {
-	var prior, planned dyntype.Value
+	var prior, priorSecret, planned, plannedSecret dyntype.Value
 	var reconfigurable types.Bool
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, stepsPath, &prior)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, sensitiveStepsPath, &priorSecret)...)
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, stepsPath, &planned)...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, sensitiveStepsPath, &plannedSecret)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, supportsReconfigurePath, &reconfigurable)...)
-	resp.RequiresReplace = !imported(prior) && !imported(planned) && !reconfigurable.ValueBool()
+	resp.RequiresReplace = !noSteps(prior, priorSecret) && !noSteps(planned, plannedSecret) && !reconfigurable.ValueBool()
 }
 
-// imported reports whether the steps are null, which means the provider does not know them: in
-// state after an import or after they were removed from the configuration, in a plan when they are
-// left out. The steps cannot be read back, so the first ones written are recorded, not applied,
-// and removing them only forgets them.
-func imported(steps dyntype.Value) bool {
+var sensitiveStepsPath = path.Root("sensitive_steps")
+
+// noSteps reports whether neither `steps` nor `sensitive_steps` is set, which means the provider
+// does not know the steps: in state after an import or after both were removed from the
+// configuration, in a plan when both are left out. The steps cannot be read back, so the first
+// ones written are recorded, not applied, and removing them only forgets them. Either attribute
+// alone is enough to know them (ADR-0021).
+func noSteps(steps, sensitive dyntype.Value) bool {
+	return nullSteps(steps) && nullSteps(sensitive)
+}
+
+// nullSteps reports whether a step object is null.
+func nullSteps(steps dyntype.Value) bool {
 	return steps.IsNull() || steps.IsUnderlyingValueNull()
 }
 
@@ -161,7 +171,8 @@ func imported(steps dyntype.Value) bool {
 // they are not only being recorded after an import or forgotten, and the type has a reconfigure
 // flow.
 func reconfigures(state, plan integrationSubentryModel) bool {
-	if imported(state.Steps) || imported(plan.Steps) || !state.SupportsReconfigure.ValueBool() {
+	if noSteps(state.Steps, state.SensitiveSteps) || noSteps(plan.Steps, plan.SensitiveSteps) ||
+		!state.SupportsReconfigure.ValueBool() {
 		return false
 	}
 	return !stepsEqual(state.Steps, plan.Steps) || !stepsEqual(state.SensitiveSteps, plan.SensitiveSteps)
@@ -209,13 +220,14 @@ func (r *integrationSubentryResource) ModifyPlan(ctx context.Context, req resour
 // imported subentry can do without them. A replacement is planned as a create too, so this covers
 // a changed `entry_id` or `subentry_type` and `-replace`.
 func requireSubentrySteps(ctx context.Context, plan tfsdk.Plan, resp *resource.ModifyPlanResponse) {
-	var steps dyntype.Value
+	var steps, sensitive dyntype.Value
 	resp.Diagnostics.Append(plan.GetAttribute(ctx, stepsPath, &steps)...)
-	if !resp.Diagnostics.HasError() && imported(steps) {
+	resp.Diagnostics.Append(plan.GetAttribute(ctx, sensitiveStepsPath, &sensitive)...)
+	if !resp.Diagnostics.HasError() && noSteps(steps, sensitive) {
 		resp.Diagnostics.AddAttributeError(stepsPath, "Missing steps", "Creating the subentry runs "+
-			"its subentry flow, which needs `steps`, e.g. `{ user = { declination = 30 } }`. Only a "+
-			"subentry imported from Home Assistant can do without them, and replacing it creates "+
-			"a new one.")
+			"its subentry flow, which needs `steps` or `sensitive_steps`, e.g. "+
+			"`{ user = { declination = 30 } }`. Only a subentry imported from Home Assistant can do "+
+			"without them, and replacing it creates a new one.")
 	}
 }
 
@@ -356,6 +368,18 @@ func parseSubentryID(id string) (entryID, subentryID string, err error) {
 
 // subentryErrorDetail is client.ErrorDetail with hints that fit creating a subentry.
 func subentryErrorDetail(err error) string {
+	var unidentified *client.SubentryUnidentifiedError
+	if errors.As(err, &unidentified) {
+		detail := err.Error() + fmt.Sprintf("\n\nThe subentry exists in Home Assistant, but not in the "+
+			"state. Do not apply again: that would create a second one. Import it instead: list the "+
+			"subentries of config entry %s with the WebSocket command `config_entries/subentries/list`, "+
+			"find the one of type %q titled %q, and run `tofu import <resource address> %s/<subentry_id>`.",
+			unidentified.EntryID, unidentified.SubentryType, unidentified.Title, unidentified.EntryID)
+		if len(unidentified.Candidates) > 0 {
+			detail += " Candidates: " + strings.Join(unidentified.Candidates, ", ") + "."
+		}
+		return detail
+	}
 	var aborted *client.FlowAbortedError
 	if errors.As(err, &aborted) && aborted.Reason == "already_configured" {
 		return err.Error() + "\n\nThe config entry already has this subentry. Import it into this " +

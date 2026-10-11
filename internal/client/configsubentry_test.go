@@ -25,6 +25,8 @@ type fakeSubentryHA struct {
 	// bothStarted, if set, is closed once two flows have started; each create_entry waits for
 	// that, or for a timeout.
 	bothStarted chan struct{}
+	// failLists is the number of list commands that fail once a subentry was created.
+	failLists int
 
 	mu         sync.Mutex
 	subentries []ConfigSubentry
@@ -46,6 +48,10 @@ func (f *fakeSubentryHA) Command(_ context.Context, typ string, params map[strin
 	}
 	switch typ {
 	case "config_entries/subentries/list":
+		if f.failLists > 0 && len(f.submitted) > 0 {
+			f.failLists--
+			return ErrConnectionLost
+		}
 		out := result.(*[]ConfigSubentry)
 		*out = append([]ConfigSubentry(nil), f.subentries...)
 		return nil
@@ -243,7 +249,7 @@ func TestNewSubentry(t *testing.T) {
 				ConfigSubentry{SubentryID: "S3", SubentryType: "plane", Title: "B"}),
 			want: "S3",
 		},
-		"none": {after: before, wantErr: "was created, but it is not listed"},
+		"none": {after: before, wantErr: "cannot be identified: it is not listed"},
 		"ambiguous": {
 			after: append(before,
 				ConfigSubentry{SubentryID: "S2", SubentryType: "plane", Title: "B"},
@@ -253,10 +259,14 @@ func TestNewSubentry(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := newSubentry(before, tc.after, "plane", "B")
+			got, err := newSubentry("E1", before, tc.after, "plane", "B")
 			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				var unidentified *SubentryUnidentifiedError
+				if !errors.As(err, &unidentified) || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				if unidentified.EntryID != "E1" || unidentified.SubentryType != "plane" || unidentified.Title != "B" {
+					t.Errorf("unidentified = %+v", unidentified)
 				}
 				return
 			}
@@ -480,5 +490,89 @@ func TestReconfigureAnswer(t *testing.T) {
 	var missing *FlowStepMissingError
 	if _, err := answer(t.Context(), form("init", "prompt")); !errors.As(err, &missing) || !missing.Repeated {
 		t.Errorf("second form: err = %v", err)
+	}
+}
+
+// shortIdentifyBackoff shortens the waits between the lists after a create for the test.
+func shortIdentifyBackoff(t *testing.T) {
+	old := identifyBackoff
+	identifyBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { identifyBackoff = old })
+}
+
+// The flow created the subentry, and the list after it fails at first: Create retries it.
+func TestConfigSubentriesCreateRetriesList(t *testing.T) {
+	shortIdentifyBackoff(t)
+	f := &fakeSubentryHA{t: t, types: []string{"entity"}, failLists: 2}
+
+	got, err := f.client().Create(t.Context(), "E1", "entity", []FlowStep{{StepID: "user", Data: map[string]any{"name": "Sensor"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SubentryID != "S1" || f.failLists != 0 {
+		t.Errorf("Create = %+v, failLists left = %d", got, f.failLists)
+	}
+}
+
+// The flow created the subentry, and every list after it fails: the error names what was created,
+// so it can be imported instead of created a second time.
+func TestConfigSubentriesCreateListFailsAfterFlow(t *testing.T) {
+	shortIdentifyBackoff(t)
+	f := &fakeSubentryHA{t: t, types: []string{"entity"}, failLists: 100}
+
+	_, err := f.client().Create(t.Context(), "E1", "entity", []FlowStep{{StepID: "user", Data: map[string]any{"name": "Sensor"}}})
+
+	var unidentified *SubentryUnidentifiedError
+	if !errors.As(err, &unidentified) {
+		t.Fatalf("err = %v", err)
+	}
+	want := SubentryUnidentifiedError{EntryID: "E1", SubentryType: "entity", Title: "Sensor"}
+	if unidentified.EntryID != want.EntryID || unidentified.SubentryType != want.SubentryType || unidentified.Title != want.Title {
+		t.Errorf("unidentified = %+v, want %+v", unidentified, want)
+	}
+	if !errors.Is(err, ErrConnectionLost) {
+		t.Errorf("err does not wrap the list's failure: %v", err)
+	}
+	if attempts := 100 - f.failLists; attempts != len(identifyBackoff)+1 {
+		t.Errorf("listed %d times after the flow, want %d", attempts, len(identifyBackoff)+1)
+	}
+	if len(f.subentries) != 1 {
+		t.Errorf("subentries = %+v, want the created one", f.subentries)
+	}
+}
+
+// A reconfigure form with a required section: steps hold the section as a nested object, as the
+// create flow submitted it.
+func TestReconfigureAnswerFillsNestedSection(t *testing.T) {
+	form := FlowForm{Flow: "reconfigure flow", StepID: "reconfigure", Fields: []FormField{
+		{Name: "broker", Required: true},
+		{Name: "other_settings", Required: true, Type: "expandable", Schema: []FormField{
+			{Name: "keepalive", Required: true},
+			{Name: "set_ca_cert", Required: true},
+		}},
+	}}
+	steps := []FlowStep{{
+		StepID:        "user",
+		Data:          map[string]any{"broker": "b", "other_settings": map[string]any{"keepalive": 30, "unused": true}},
+		SensitiveData: map[string]any{"other_settings": map[string]any{"keepalive": 30, "set_ca_cert": "auto"}},
+	}}
+
+	got, err := reconfigureAnswer(steps)(t.Context(), form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"broker": "b", "other_settings": map[string]any{"keepalive": 30, "set_ca_cert": "auto"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("answer = %v, want %v", got, want)
+	}
+
+	// Two steps with different sections, and none named after the form: ambiguous.
+	_, err = reconfigureAnswer([]FlowStep{
+		{StepID: "a", Data: map[string]any{"broker": "b", "other_settings": map[string]any{"keepalive": 1, "set_ca_cert": "auto"}}},
+		{StepID: "b", Data: map[string]any{"other_settings": map[string]any{"keepalive": 2, "set_ca_cert": "auto"}}},
+	})(t.Context(), form)
+	var ambiguous *FlowFieldAmbiguousError
+	if !errors.As(err, &ambiguous) || ambiguous.Field != "other_settings" {
+		t.Errorf("err = %v, want other_settings ambiguous", err)
 	}
 }

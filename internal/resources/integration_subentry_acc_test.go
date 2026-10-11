@@ -323,6 +323,94 @@ import {
 	})
 }
 
+// secretPlaneConfig is a plane with all its fields in sensitive_steps and no steps (ADR-0021).
+func secretPlaneConfig(entryID string, declination int) string {
+	return acctest.ProviderConfig + fmt.Sprintf(`
+resource "homeassistant_integration_subentry" "secret" {
+  entry_id      = %q
+  subentry_type = "plane"
+  sensitive_steps = {
+    user = { declination = %d, azimuth = 180, modules_power = 2000 }
+  }
+}
+`, entryID, declination)
+}
+
+// A subentry with only sensitive_steps is created, reconfigured, and replaced like one with steps.
+func TestAccIntegrationSubentry_SensitiveStepsOnly(t *testing.T) {
+	acctest.SharedInstance(t)
+	const addr = "homeassistant_integration_subentry.secret"
+	first, firstPlane := solarEntry(t)
+	second, secondPlane := solarEntry(t)
+	// Without planes, the entries take a new one without an API key.
+	for entryID, planeID := range map[string]string{first: firstPlane, second: secondPlane} {
+		if err := configSubentries(t).Delete(context.Background(), entryID, planeID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var planeID string
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy: func(*terraform.State) error {
+			for _, entryID := range []string{first, second} {
+				if planes := solarPlanes(t, entryID); len(planes) != 0 {
+					t.Errorf("planes of %s left after destroy: %+v", entryID, planes)
+				}
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: secretPlaneConfig(first, 20),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionCreate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "title", "20° / 180° / 2000W"),
+					func(s *terraform.State) error {
+						planeID = s.RootModule().Resources[addr].Primary.Attributes["subentry_id"]
+						return nil
+					},
+					checkOnlyPlane(t, first, func() string { return planeID }, "20° / 180° / 2000W"),
+				),
+			},
+			{
+				// A changed secret reconfigures the plane in place, as changed steps do.
+				Config: secretPlaneConfig(first, 40),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrPtr(addr, "subentry_id", &planeID),
+					resource.TestCheckResourceAttr(addr, "title", "40° / 180° / 2000W"),
+					checkOnlyPlane(t, first, func() string { return planeID }, "40° / 180° / 2000W"),
+				),
+			},
+			{
+				// Another entry replaces the plane; the create of the replacement has only secrets.
+				Config: secretPlaneConfig(second, 40),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "entry_id", second),
+					resource.TestCheckResourceAttr(addr, "title", "40° / 180° / 2000W"),
+					func(s *terraform.State) error {
+						if planes := solarPlanes(t, first); len(planes) != 0 {
+							t.Errorf("planes left in the first entry: %+v", planes)
+						}
+						planeID = s.RootModule().Resources[addr].Primary.Attributes["subentry_id"]
+						return nil
+					},
+					checkOnlyPlane(t, second, func() string { return planeID }, "40° / 180° / 2000W"),
+				),
+			},
+		},
+	})
+}
+
 func TestAccIntegrationSubentry_Errors(t *testing.T) {
 	acctest.SharedInstance(t)
 	entryID, _ := solarEntry(t)

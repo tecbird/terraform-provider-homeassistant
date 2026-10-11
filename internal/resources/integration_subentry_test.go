@@ -34,6 +34,17 @@ func TestSubentryErrorDetail(t *testing.T) {
 		err  error
 		hint string
 	}{
+		// Created but not identified: never suggest applying again, name what to import.
+		"unidentified": {
+			err: &client.SubentryUnidentifiedError{
+				EntryID: "E1", SubentryType: "plane", Title: "30° / 180° / 5000W", Candidates: []string{"S2", "S3"},
+				Err: client.ErrConnectionLost,
+			},
+			hint: "Do not apply again: that would create a second one. Import it instead: list the subentries " +
+				"of config entry E1 with the WebSocket command `config_entries/subentries/list`, find the one " +
+				"of type \"plane\" titled \"30° / 180° / 5000W\", and run `tofu import <resource address> " +
+				"E1/<subentry_id>`. Candidates: S2, S3.",
+		},
 		"already configured": {
 			err:  &client.FlowAbortedError{Flow: "subentry flow", Reason: "already_configured"},
 			hint: "tofu import <resource address> <entry_id>/<subentry_id>",
@@ -124,6 +135,11 @@ func TestReconfigures(t *testing.T) {
 		"flag unknown":            {state: model(steps, null, types.BoolNull()), plan: model(changed, null, types.BoolNull())},
 		"after import":            {state: model(null, null, types.BoolValue(true)), plan: model(changed, null, types.BoolValue(true))},
 		"steps removed":           {state: model(steps, null, types.BoolValue(true)), plan: model(null, null, types.BoolValue(true))},
+		// Only sensitive_steps set: they are the steps (ADR-0021), not an import.
+		"secret-only changed":      {state: model(null, steps, types.BoolValue(true)), plan: model(null, changed, types.BoolValue(true)), want: true},
+		"secret-only unchanged":    {state: model(null, steps, types.BoolValue(true)), plan: model(null, steps, types.BoolValue(true))},
+		"secret moved to steps":    {state: model(null, steps, types.BoolValue(true)), plan: model(steps, null, types.BoolValue(true)), want: true},
+		"secret-only after import": {state: model(null, null, types.BoolValue(true)), plan: model(null, changed, types.BoolValue(true))},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -138,11 +154,20 @@ func TestReconfigures(t *testing.T) {
 // steps and supports_reconfigure.
 func subentryData(t *testing.T, steps dyntype.Value, reconfigurable types.Bool) (resource.SchemaResponse, tftypes.Value) {
 	t.Helper()
+	return subentrySecretData(t, steps, dyntype.NewNull(), reconfigurable)
+}
+
+// subentrySecretData is subentryData with sensitive_steps.
+func subentrySecretData(t *testing.T, steps, sensitive dyntype.Value, reconfigurable types.Bool) (resource.SchemaResponse, tftypes.Value) {
+	t.Helper()
 	ctx := t.Context()
 	var sr resource.SchemaResponse
 	NewIntegrationSubentry().Schema(ctx, resource.SchemaRequest{}, &sr)
 	s := tfsdk.State{Schema: sr.Schema, Raw: tftypes.NewValue(sr.Schema.Type().TerraformType(ctx), nil)}
 	if d := s.SetAttribute(ctx, stepsPath, steps); d.HasError() {
+		t.Fatal(d)
+	}
+	if d := s.SetAttribute(ctx, sensitiveStepsPath, sensitive); d.HasError() {
 		t.Fatal(d)
 	}
 	if d := s.SetAttribute(ctx, supportsReconfigurePath, reconfigurable); d.HasError() {
@@ -159,9 +184,10 @@ func TestSubentryStepsChanged(t *testing.T) {
 	changed := mustDyn(t, `{"user": {"declination": 35}}`)
 	null := dyntype.NewNull()
 	cases := map[string]struct {
-		prior, planned dyntype.Value
-		reconfigurable types.Bool
-		want           bool
+		prior, planned             dyntype.Value
+		priorSecret, plannedSecret dyntype.Value // null if not set
+		reconfigurable             types.Bool
+		want                       bool
 	}{
 		"reconfigurable":              {prior: steps, planned: changed, reconfigurable: types.BoolValue(true)},
 		"not reconfigurable":          {prior: steps, planned: changed, reconfigurable: types.BoolValue(false), want: true},
@@ -170,11 +196,28 @@ func TestSubentryStepsChanged(t *testing.T) {
 		"after import, flag":          {prior: null, planned: changed, reconfigurable: types.BoolValue(true)},
 		"removed, not reconfigurable": {prior: steps, planned: null, reconfigurable: types.BoolValue(false)},
 		"removed, flag not read":      {prior: steps, planned: null, reconfigurable: types.BoolNull()},
+		// Only sensitive_steps set: a change replaces or reconfigures like one of steps.
+		"secret-only, not reconfigurable": {
+			prior: null, planned: null, priorSecret: steps, plannedSecret: changed,
+			reconfigurable: types.BoolValue(false), want: true,
+		},
+		"secret-only, reconfigurable": {
+			prior: null, planned: null, priorSecret: steps, plannedSecret: changed, reconfigurable: types.BoolValue(true),
+		},
+		"secret-only after import": {
+			prior: null, planned: null, priorSecret: null, plannedSecret: changed, reconfigurable: types.BoolValue(false),
+		},
+	}
+	orNull := func(v dyntype.Value) dyntype.Value {
+		if v.IsNull() {
+			return dyntype.NewNull()
+		}
+		return v
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			sr, prior := subentryData(t, tc.prior, tc.reconfigurable)
-			_, planned := subentryData(t, tc.planned, tc.reconfigurable)
+			sr, prior := subentrySecretData(t, tc.prior, orNull(tc.priorSecret), tc.reconfigurable)
+			_, planned := subentrySecretData(t, tc.planned, orNull(tc.plannedSecret), tc.reconfigurable)
 			var resp dynamicplanmodifier.RequiresReplaceIfFuncResponse
 			subentryStepsChanged(ctx, planmodifier.DynamicRequest{
 				State: tfsdk.State{Schema: sr.Schema, Raw: prior},
@@ -197,27 +240,35 @@ func TestSubentryModifyPlanRequiresStepsToCreate(t *testing.T) {
 	unknown := dyntype.Value{DynamicValue: basetypes.NewDynamicUnknown()}
 	cases := map[string]struct {
 		state, plan *dyntype.Value // nil: no object, i.e. a create or a destroy
+		planSecret  *dyntype.Value // sensitive_steps of the plan; nil: null
 		wantErr     bool
 	}{
 		"create with steps":         {plan: &steps},
 		"create with unknown steps": {plan: &unknown},
 		"create without steps":      {plan: &null, wantErr: true},
-		"update without steps":      {state: &null, plan: &null},
-		"forget steps":              {state: &steps, plan: &null},
-		"destroy without steps":     {state: &null},
+		// A replacement is planned as a create, so this covers replacing a secret-only one too.
+		"create with sensitive steps only": {plan: &null, planSecret: &steps},
+		"create with unknown sensitive":    {plan: &null, planSecret: &unknown},
+		"update without steps":             {state: &null, plan: &null},
+		"forget steps":                     {state: &steps, plan: &null},
+		"destroy without steps":            {state: &null},
 	}
-	raw := func(steps *dyntype.Value) (resource.SchemaResponse, tftypes.Value) {
+	raw := func(steps, secret *dyntype.Value) (resource.SchemaResponse, tftypes.Value) {
 		sr, v := subentryData(t, null, types.BoolValue(true))
 		if steps == nil {
 			return sr, tftypes.NewValue(v.Type(), nil)
 		}
-		_, v = subentryData(t, *steps, types.BoolValue(true))
+		s := null
+		if secret != nil {
+			s = *secret
+		}
+		_, v = subentrySecretData(t, *steps, s, types.BoolValue(true))
 		return sr, v
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			sr, state := raw(tc.state)
-			_, plan := raw(tc.plan)
+			sr, state := raw(tc.state, nil)
+			_, plan := raw(tc.plan, tc.planSecret)
 			resp := resource.ModifyPlanResponse{Plan: tfsdk.Plan{Schema: sr.Schema, Raw: plan}}
 			(&integrationSubentryResource{}).ModifyPlan(t.Context(), resource.ModifyPlanRequest{
 				State: tfsdk.State{Schema: sr.Schema, Raw: state},
