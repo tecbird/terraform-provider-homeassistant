@@ -26,6 +26,7 @@ import (
 var (
 	_ resource.ResourceWithConfigure   = (*integrationResource)(nil)
 	_ resource.ResourceWithImportState = (*integrationResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*integrationResource)(nil)
 )
 
 // NewIntegration returns the generic `homeassistant_integration` resource (ADR-0014).
@@ -68,9 +69,12 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				"Assistant shows is answered by the step with its `step_id`; a form without fields " +
 				"is answered by `{}`. If Home Assistant asks for a step that is not given, or " +
 				"rejects the data, the flow is aborted and nothing is created. Changing the steps " +
-				"replaces the entry, except right after an import, when they are only recorded.",
+				"replaces the entry, except right after an import, when they are only recorded. " +
+				"Creating the entry needs them. An imported entry can do without them: they stay " +
+				"null until set, which is what `tofu plan -generate-config-out` writes, and " +
+				"removing them later only forgets them.",
 			CustomType:    dyntype.Type{},
-			Required:      true,
+			Optional:      true,
 			Validators:    []validator.Dynamic{stepsValidator{}},
 			PlanModifiers: []planmodifier.Dynamic{replaceUnlessImported},
 		},
@@ -96,13 +100,40 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 	}
 }
 
-// stepsChanged requires replacement unless the prior `steps` are null, which they are only after
-// an import: the steps cannot be read back, so the first ones written are recorded, not applied.
+// stepsChanged requires replacement unless the prior or the planned `steps` are null. Null steps
+// in state mean the provider does not know them: after an import, or after they were removed from
+// the configuration. The steps cannot be read back, so the first ones written are recorded, not
+// applied, and removing them only forgets them.
 func stepsChanged(ctx context.Context, req planmodifier.DynamicRequest, resp *dynamicplanmodifier.RequiresReplaceIfFuncResponse) {
-	var prior dyntype.Value
+	var prior, planned dyntype.Value
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, stepsPath, &prior)...)
-	resp.RequiresReplace = !prior.IsNull() && !prior.IsUnderlyingValueNull()
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, stepsPath, &planned)...)
+	resp.RequiresReplace = hasSteps(prior) && hasSteps(planned)
 }
+
+// hasSteps reports whether `steps` are set; an unknown value counts as set.
+func hasSteps(v dyntype.Value) bool {
+	return !v.IsNull() && !v.IsUnderlyingValueNull()
+}
+
+// ModifyPlan fails a plan that creates the entry without steps, since only an imported entry can
+// do without them. A replacement is planned as a create too, so this covers a changed `domain` and
+// `-replace`.
+func (r *integrationResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if !req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	var steps dyntype.Value
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, stepsPath, &steps)...)
+	if !resp.Diagnostics.HasError() && !hasSteps(steps) {
+		resp.Diagnostics.AddAttributeError(stepsPath, "Missing steps", missingStepsDetail)
+	}
+}
+
+// missingStepsDetail explains why a create needs `steps`.
+const missingStepsDetail = "Creating the config entry runs its config flow, which needs `steps`, " +
+	"e.g. `{ user = { host = \"192.168.1.50\" } }`. Only an entry imported from Home Assistant " +
+	"can do without them, and replacing it creates a new one."
 
 func (r *integrationResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	c := haClient(req, resp)
