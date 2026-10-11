@@ -23,7 +23,7 @@ func checkDefaultDashboardConfig(t *testing.T, want string) func(*terraform.Stat
 		if want == "" {
 			_, err := dashboards(t).Config(context.Background(), client.DefaultDashboardURLPath)
 			if !errors.Is(err, client.ErrNoDashboardConfig) {
-				return fmt.Errorf("default dashboard: err = %v, want no saved config", err)
+				return fmt.Errorf("default dashboard: err = %w, want no saved config", err)
 			}
 			return nil
 		}
