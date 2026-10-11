@@ -161,7 +161,7 @@ func (r *dashboardResource) Create(ctx context.Context, req resource.CreateReque
 		addSaveError(&resp.Diagnostics, "Saving dashboard config", err)
 		return
 	}
-	r.storeBaseline(ctx, urlPath, resp.Private, &resp.Diagnostics)
+	storeDashboardBaseline(ctx, r.dashboards, urlPath, resp.Private, &resp.Diagnostics)
 
 	plan.ID = plan.URLPath
 	plan.DashboardID = types.StringValue(dash.ID)
@@ -249,17 +249,17 @@ func (r *dashboardResource) Update(ctx context.Context, req resource.UpdateReque
 			addSaveError(&resp.Diagnostics, "Saving dashboard config", err)
 			return
 		}
-		r.storeBaseline(ctx, urlPath, resp.Private, &resp.Diagnostics)
+		storeDashboardBaseline(ctx, r.dashboards, urlPath, resp.Private, &resp.Diagnostics)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
-// storeBaseline reads the config just saved back from HA and stores it as the baseline
+// storeDashboardBaseline reads the config just saved back from HA and stores it as the baseline
 // (ADR-0023). Failing to read it back is only a warning: without a baseline, Read falls back to
-// semantic equality.
-func (r *dashboardResource) storeBaseline(ctx context.Context, urlPath string, private privateSetter, diags *diag.Diagnostics) {
-	stored, err := r.dashboards.Config(ctx, urlPath)
+// semantic equality. It serves the default dashboard too, with client.DefaultDashboardURLPath.
+func storeDashboardBaseline(ctx context.Context, dashboards client.Dashboards, urlPath string, private privateSetter, diags *diag.Diagnostics) {
+	stored, err := dashboards.Config(ctx, urlPath)
 	if err != nil {
 		diags.AddWarning("Reading the dashboard config back",
 			client.ErrorDetail(err)+"\n\nThe config was saved. Until the next apply, changes that "+

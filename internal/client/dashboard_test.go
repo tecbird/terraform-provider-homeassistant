@@ -118,3 +118,48 @@ func TestDashboardsConfig(t *testing.T) {
 		t.Errorf("Config on other error: err = %v, want it passed through", err)
 	}
 }
+
+// The default dashboard has no url_path: the config commands leave the field out.
+func TestDashboardsDefaultConfigCommandsOmitURLPath(t *testing.T) {
+	f := &fakeCommander{replies: []fakeReply{
+		{result: `{"views":[]}`},
+		{err: &WSError{Code: "config_not_found", Message: "No config found."}},
+		{},
+		{},
+	}}
+	d := NewDashboards(f)
+	cfg := json.RawMessage(`{"views":[]}`)
+
+	if raw, err := d.Config(t.Context(), DefaultDashboardURLPath); err != nil || string(raw) != `{"views":[]}` {
+		t.Errorf("Config = %s, %v", raw, err)
+	}
+	if _, err := d.Config(t.Context(), DefaultDashboardURLPath); !errors.Is(err, ErrNoDashboardConfig) {
+		t.Errorf("Config of an auto-generated default: err = %v, want ErrNoDashboardConfig", err)
+	}
+	if err := d.SaveConfig(t.Context(), DefaultDashboardURLPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteConfig(t.Context(), DefaultDashboardURLPath); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []fakeCall{
+		{"lovelace/config", map[string]any{"force": true}},
+		{"lovelace/config", map[string]any{"force": true}},
+		{"lovelace/config/save", map[string]any{"config": cfg}},
+		{"lovelace/config/delete", map[string]any{}},
+	}
+	if !reflect.DeepEqual(f.calls, want) {
+		t.Errorf("calls = %v, want %v", f.calls, want)
+	}
+}
+
+func TestDashboardsDeleteConfigNamesTheDashboard(t *testing.T) {
+	f := &fakeCommander{replies: []fakeReply{{}}}
+	if err := NewDashboards(f).DeleteConfig(t.Context(), "my-home"); err != nil {
+		t.Fatal(err)
+	}
+	if want := (fakeCall{"lovelace/config/delete", map[string]any{"url_path": "my-home"}}); !reflect.DeepEqual(f.calls[0], want) {
+		t.Errorf("call = %v, want %v", f.calls[0], want)
+	}
+}
