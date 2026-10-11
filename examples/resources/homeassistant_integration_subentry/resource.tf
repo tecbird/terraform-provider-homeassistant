@@ -5,7 +5,8 @@ resource "homeassistant_integration" "anthropic" {
 }
 
 # A conversation agent of the integration. Each key of `steps` answers the subentry-flow form with
-# that step_id; `sensitive_steps` works as in `homeassistant_integration`.
+# that step_id; `sensitive_steps` works as in `homeassistant_integration`. Conversation agents have
+# a reconfigure flow, so changing the prompt later changes the agent in place.
 resource "homeassistant_integration_subentry" "kitchen_agent" {
   entry_id      = homeassistant_integration.anthropic.id
   subentry_type = "conversation"

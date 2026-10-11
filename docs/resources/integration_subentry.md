@@ -3,12 +3,12 @@
 page_title: "homeassistant_integration_subentry Resource - homeassistant"
 subcategory: ""
 description: |-
-  A subentry of a config entry, e.g. a plane of forecast_solar or a conversation agent of an AI integration, created by answering its subentry flow with the given steps. Home Assistant cannot return the data a subentry was created with, so the steps are never compared with Home Assistant: changing them replaces the subentry, and only a subentry that is gone is detected as drift. Flows that need a menu are not supported.
+  A subentry of a config entry, e.g. a plane of forecast_solar or a conversation agent of an AI integration, created by answering its subentry flow with the given steps. Home Assistant cannot return the data a subentry was created with, so the steps are never compared with Home Assistant, and only a subentry that is gone is detected as drift. Changing the steps runs the subentry's reconfigure flow, which keeps the subentry with its devices and entities, if its type has one (supports_reconfigure); otherwise it replaces the subentry. Flows that need a menu are not supported.
 ---
 
 # homeassistant_integration_subentry (Resource)
 
-A subentry of a config entry, e.g. a plane of `forecast_solar` or a conversation agent of an AI integration, created by answering its subentry flow with the given steps. Home Assistant cannot return the data a subentry was created with, so the steps are never compared with Home Assistant: changing them replaces the subentry, and only a subentry that is gone is detected as drift. Flows that need a menu are not supported.
+A subentry of a config entry, e.g. a plane of `forecast_solar` or a conversation agent of an AI integration, created by answering its subentry flow with the given steps. Home Assistant cannot return the data a subentry was created with, so the steps are never compared with Home Assistant, and only a subentry that is gone is detected as drift. Changing the steps runs the subentry's reconfigure flow, which keeps the subentry with its devices and entities, if its type has one (`supports_reconfigure`); otherwise it replaces the subentry. Flows that need a menu are not supported.
 
 ## Example Usage
 
@@ -20,7 +20,8 @@ resource "homeassistant_integration" "anthropic" {
 }
 
 # A conversation agent of the integration. Each key of `steps` answers the subentry-flow form with
-# that step_id; `sensitive_steps` works as in `homeassistant_integration`.
+# that step_id; `sensitive_steps` works as in `homeassistant_integration`. Conversation agents have
+# a reconfigure flow, so changing the prompt later changes the agent in place.
 resource "homeassistant_integration_subentry" "kitchen_agent" {
   entry_id      = homeassistant_integration.anthropic.id
   subentry_type = "conversation"
@@ -46,7 +47,7 @@ variable "anthropic_api_key" {
 ### Required
 
 - `entry_id` (String) The `entry_id` of the config entry the subentry belongs to, e.g. `homeassistant_integration.solar.id`. Changing it replaces the subentry.
-- `steps` (Dynamic) The answers to the subentry flow's forms, as an object from `step_id` to the form's fields, e.g. `{ user = { declination = 30 } }`. They work as the `steps` of `homeassistant_integration` do. If Home Assistant asks for a step that is not given, or rejects the data, the flow is aborted and nothing is created. Changing the steps replaces the subentry, except right after an import, when they are only recorded.
+- `steps` (Dynamic) The answers to the subentry flow's forms, as an object from `step_id` to the form's fields, e.g. `{ user = { declination = 30 } }`. They work as the `steps` of `homeassistant_integration` do. If Home Assistant asks for a step that is not given, or rejects the data, the flow is aborted and nothing is created. When the steps change and the type supports it, the reconfigure flow answers each of its forms from the steps by the form's fields: a field takes its value from the step with the form's `step_id`, else from any step that has it, and fields the form does not show are left out. Otherwise a change replaces the subentry. Right after an import the steps are only recorded.
 - `subentry_type` (String) The kind of subentry, as the integration names it, e.g. `plane` for `forecast_solar` or `conversation` for an AI integration. Changing it replaces the subentry.
 
 ### Optional
@@ -57,6 +58,7 @@ variable "anthropic_api_key" {
 
 - `id` (String) `<entry_id>/<subentry_id>`. Import with this ID.
 - `subentry_id` (String) The subentry's `subentry_id`, assigned by Home Assistant.
+- `supports_reconfigure` (Boolean) Whether subentries of this type have a reconfigure flow, as Home Assistant reports it. If so, changed steps reconfigure the subentry in place; if not, they replace it.
 - `title` (String) Title of the subentry, chosen by the integration's flow.
 - `unique_id` (String) The subentry's unique ID within its config entry, if the integration sets one; otherwise null.
 

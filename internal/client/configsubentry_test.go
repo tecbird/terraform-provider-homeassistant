@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -318,5 +319,166 @@ func TestConfigSubentriesDelete(t *testing.T) {
 	}}, nil)
 	if err := failing.Delete(t.Context(), "E1", "S2"); err == nil {
 		t.Error("Delete = nil error")
+	}
+}
+
+func TestConfigSubentriesSupportsReconfigure(t *testing.T) {
+	c := NewConfigSubentries(fakeWS{"config_entries/get_single": func(params map[string]any) (any, error) {
+		if params["entry_id"] != "E1" {
+			return nil, &WSError{Code: "not_found", Message: "Config entry not found"}
+		}
+		return json.RawMessage(`{"config_entry":{"entry_id":"E1","domain":"forecast_solar",
+			"supported_subentry_types":{"plane":{"supports_reconfigure":true},"other":{"supports_reconfigure":false}}}}`), nil
+	}}, nil)
+
+	for typ, want := range map[string]bool{"plane": true, "other": false, "unlisted": false} {
+		if got, err := c.SupportsReconfigure(t.Context(), "E1", typ); err != nil || got != want {
+			t.Errorf("SupportsReconfigure(%s) = %v, %v; want %v", typ, got, err, want)
+		}
+	}
+	if _, err := c.SupportsReconfigure(t.Context(), "E9", "plane"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SupportsReconfigure(E9) = %v, want ErrNotFound", err)
+	}
+}
+
+// planeForm is forecast_solar's reconfigure form of a plane.
+const planeForm = `{"type":"form","flow_id":"f1","step_id":"reconfigure","errors":{},"data_schema":[
+	{"name":"declination","required":true},{"name":"azimuth","required":true},{"name":"modules_power","required":true}]}`
+
+// reconfigureFake serves a reconfigure flow on fakeFlow and a subentry list whose title changes
+// once the flow has posted its form.
+func reconfigureFake(t *testing.T, replies ...string) (*fakeFlow, ConfigSubentries) {
+	f := &fakeFlow{t: t, path: "config/config_entries/subentries/flow", init: planeForm, replies: replies}
+	ws := fakeWS{"config_entries/subentries/list": func(map[string]any) (any, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		title := "25° / 180° / 10000W"
+		if len(f.submitted) > 0 {
+			title = "30° / 180° / 5000W"
+		}
+		return []ConfigSubentry{{SubentryID: "S1", SubentryType: "plane", Title: title}}, nil
+	}}
+	return f, NewConfigSubentries(ws, serve(t, f.handle))
+}
+
+func TestConfigSubentriesReconfigure(t *testing.T) {
+	f, c := reconfigureFake(t, `{"type":"abort","flow_id":"f1","reason":"reconfigure_successful"}`)
+
+	// The create flow's step `user` answers the reconfigure form; `name` is not on the form.
+	got, err := c.Reconfigure(t.Context(), "E1", "plane", "S1", []FlowStep{{
+		StepID:        "user",
+		Data:          map[string]any{"declination": 30, "azimuth": 180, "name": "unused"},
+		SensitiveData: map[string]any{"modules_power": 5000},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (ConfigSubentry{SubentryID: "S1", SubentryType: "plane", Title: "30° / 180° / 5000W"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Reconfigure = %+v, want %+v", got, want)
+	}
+	if want := map[string]any{"handler": []any{"E1", "plane"}, "subentry_id": "S1"}; !reflect.DeepEqual(f.initBody, want) {
+		t.Errorf("init = %v", f.initBody)
+	}
+	want := []map[string]any{{"declination": float64(30), "azimuth": float64(180), "modules_power": float64(5000)}}
+	if !reflect.DeepEqual(f.submitted, want) {
+		t.Errorf("submitted = %v", f.submitted)
+	}
+}
+
+func TestConfigSubentriesReconfigureErrors(t *testing.T) {
+	steps := []FlowStep{{StepID: "user", Data: map[string]any{"declination": 30, "azimuth": 180, "modules_power": 1}}}
+
+	t.Run("abort", func(t *testing.T) {
+		_, c := reconfigureFake(t, `{"type":"abort","flow_id":"f1","reason":"no_change"}`)
+		_, err := c.Reconfigure(t.Context(), "E1", "plane", "S1", steps)
+		var aborted *FlowAbortedError
+		if !errors.As(err, &aborted) || aborted.Reason != "no_change" {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("create instead", func(t *testing.T) {
+		_, c := reconfigureFake(t, `{"type":"create_entry","flow_id":"f1","title":"x"}`)
+		_, err := c.Reconfigure(t.Context(), "E1", "plane", "S1", steps)
+		if err == nil || !strings.Contains(err.Error(), `ended with "create_entry"`) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("subentry gone", func(t *testing.T) {
+		f, c := reconfigureFake(t)
+		_, err := c.Reconfigure(t.Context(), "E1", "plane", "S9", steps)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v", err)
+		}
+		if f.initBody != nil {
+			t.Errorf("a flow was started: %v", f.initBody)
+		}
+	})
+
+	t.Run("missing field", func(t *testing.T) {
+		f, c := reconfigureFake(t)
+		_, err := c.Reconfigure(t.Context(), "E1", "plane", "S1", []FlowStep{{StepID: "user", Data: map[string]any{"declination": 30}}})
+		var missing *FlowFieldMissingError
+		if !errors.As(err, &missing) || missing.Field != "azimuth" {
+			t.Fatalf("err = %v", err)
+		}
+		if !reflect.DeepEqual(f.deleted, []string{"f1"}) {
+			t.Errorf("deleted = %v", f.deleted)
+		}
+	})
+}
+
+func TestReconfigureAnswer(t *testing.T) {
+	form := func(stepID string, fields ...string) FlowForm {
+		ff := make([]FormField, len(fields))
+		for i, n := range fields {
+			ff[i] = FormField{Name: n}
+		}
+		return FlowForm{Flow: "reconfigure flow", StepID: stepID, Fields: ff}
+	}
+	steps := []FlowStep{
+		{StepID: "init", Data: map[string]any{"name": "Agent", "prompt": "p", "recommended": false}},
+		{StepID: "model", Data: map[string]any{"chat_model": "m", "prompt": "other"}},
+	}
+
+	cases := map[string]struct {
+		form    FlowForm
+		want    map[string]any
+		wantErr string
+	}{
+		// A step of the form's step_id wins over the others, and fields not on the form are left out.
+		"own step":      {form: form("init", "prompt", "recommended"), want: map[string]any{"prompt": "p", "recommended": false}},
+		"other step_id": {form: form("reconfigure", "chat_model", "recommended"), want: map[string]any{"chat_model": "m", "recommended": false}},
+		"unset field":   {form: form("init", "temperature"), want: map[string]any{}},
+		"ambiguous": {
+			form:    form("reconfigure", "prompt"),
+			wantErr: `asked for "prompt" in step "reconfigure", which the steps "init", "model" set to different values`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := reconfigureAnswer(steps)(t.Context(), tc.form)
+			if tc.wantErr != "" {
+				var ambiguous *FlowFieldAmbiguousError
+				if !errors.As(err, &ambiguous) || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("answer = %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+
+	// The same form a second time is an error, so the flow cannot loop.
+	answer := reconfigureAnswer(steps)
+	if _, err := answer(t.Context(), form("init", "prompt")); err != nil {
+		t.Fatal(err)
+	}
+	var missing *FlowStepMissingError
+	if _, err := answer(t.Context(), form("init", "prompt")); !errors.As(err, &missing) || !missing.Repeated {
+		t.Errorf("second form: err = %v", err)
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -22,12 +24,13 @@ type ConfigSubentry struct {
 const (
 	cmdSubentriesList   = "config_entries/subentries/list"
 	cmdSubentriesDelete = "config_entries/subentries/delete"
+	cmdEntryGetSingle   = "config_entries/get_single"
 	subentryFlowPath    = "config/config_entries/subentries/flow"
 )
 
 // ConfigSubentries reads and deletes the subentries of config entries over WebSocket
-// (`config_entries/subentries/list|delete`) and creates them through subentry flows over REST
-// (`/api/config/config_entries/subentries/flow`, ADR-0004).
+// (`config_entries/subentries/list|delete`), and creates and reconfigures them through subentry
+// flows over REST (`/api/config/config_entries/subentries/flow`, ADR-0004).
 type ConfigSubentries struct {
 	ws     WSCommander
 	driver flowDriver
@@ -152,6 +155,118 @@ func newSubentry(before, after []ConfigSubentry, subentryType, title string) (Co
 	}
 	return ConfigSubentry{}, fmt.Errorf("the %s subentry %q was created, but several new subentries match it: %s",
 		subentryType, title, strings.Join(ids, ", "))
+}
+
+// SupportsReconfigure reports whether the subentries of subentryType of the config entry have a
+// reconfigure flow, as HA's `supported_subentry_types` says. A type HA does not list there is
+// reported as not reconfigurable. A missing config entry is ErrNotFound.
+func (c ConfigSubentries) SupportsReconfigure(ctx context.Context, entryID, subentryType string) (bool, error) {
+	var out struct {
+		ConfigEntry struct {
+			SupportedSubentryTypes map[string]struct {
+				SupportsReconfigure bool `json:"supports_reconfigure"`
+			} `json:"supported_subentry_types"`
+		} `json:"config_entry"`
+	}
+	err := c.ws.Command(ctx, cmdEntryGetSingle, map[string]any{"entry_id": entryID}, &out)
+	if isWSNotFound(err) {
+		return false, fmt.Errorf("config entry %s: %w", entryID, ErrNotFound)
+	}
+	if err != nil {
+		return false, err
+	}
+	return out.ConfigEntry.SupportedSubentryTypes[subentryType].SupportsReconfigure, nil
+}
+
+// Reconfigure runs the reconfigure flow of the subentry, which changes its data in place, and
+// returns the subentry as it is afterwards. Each form is answered as reconfigureAnswer describes.
+// The flow must end with the abort ReasonReconfigureSuccessful. A missing subentry is ErrNotFound.
+func (c ConfigSubentries) Reconfigure(ctx context.Context, entryID, subentryType, subentryID string, steps []FlowStep) (ConfigSubentry, error) {
+	if _, ok, err := c.Get(ctx, entryID, subentryID); err != nil || !ok {
+		if err == nil {
+			err = fmt.Errorf("subentry %s of config entry %s: %w", subentryID, entryID, ErrNotFound)
+		}
+		return ConfigSubentry{}, err
+	}
+	name := fmt.Sprintf("reconfigure flow for %s subentry %s of config entry %s", subentryType, subentryID, entryID)
+	init := map[string]any{"handler": []string{entryID, subentryType}, "subentry_id": subentryID}
+	res, err := c.driver.run(ctx, name, init, reconfigureAnswer(steps))
+	if err != nil {
+		return ConfigSubentry{}, err
+	}
+	if res.Type != "abort" {
+		return ConfigSubentry{}, fmt.Errorf("%s ended with %q instead of the abort %q", name, res.Type, ReasonReconfigureSuccessful)
+	}
+	if res.Reason != ReasonReconfigureSuccessful {
+		return ConfigSubentry{}, &FlowAbortedError{Flow: name, Reason: res.Reason}
+	}
+	sub, ok, err := c.Get(ctx, entryID, subentryID)
+	if err == nil && !ok {
+		err = fmt.Errorf("subentry %s of config entry %s is gone after %s", subentryID, entryID, name)
+	}
+	return sub, err
+}
+
+// FlowFieldAmbiguousError means a reconfigure form asks for a field that several steps give
+// different values, and the step of the form's own step_id does not have it.
+type FlowFieldAmbiguousError struct {
+	Flow   string
+	StepID string
+	Field  string
+	// Steps are the step_ids that have the field.
+	Steps []string
+}
+
+func (e *FlowFieldAmbiguousError) Error() string {
+	return fmt.Sprintf("%s asked for %q in step %q, which the steps %s set to different values; set it in a step %q",
+		e.Flow, e.Field, e.StepID, quoteList(e.Steps), e.StepID)
+}
+
+// reconfigureAnswer answers each form of a reconfigure flow from the steps that created the
+// subentry. A reconfigure flow often shows the same fields under another step_id than the flow
+// that created the subentry (forecast_solar: `user`, then `reconfigure`), or a step without some
+// of its fields (an AI integration's `init` without `name`). So each form is answered by its
+// data_schema, as FieldAnswer does: a field takes its value from the step of the form's step_id,
+// else from whichever step has it. Fields the form does not have are left out, and fields no step
+// has too, so HA keeps their value. A field that several other steps give different values is an
+// error, as is the same form a second time.
+func reconfigureAnswer(steps []FlowStep) FlowAnswer {
+	byID := map[string]map[string]any{}
+	pool := map[string]any{}
+	owners := map[string][]string{}
+	ambiguous := map[string]bool{}
+	sorted := slices.SortedFunc(slices.Values(steps), func(a, b FlowStep) int { return strings.Compare(a.StepID, b.StepID) })
+	for _, s := range sorted {
+		in := s.input()
+		byID[s.StepID] = in
+		for field, v := range in {
+			if prev, ok := pool[field]; ok && !reflect.DeepEqual(prev, v) {
+				ambiguous[field] = true
+			}
+			pool[field] = v
+			owners[field] = append(owners[field], s.StepID)
+		}
+	}
+	seen := map[string]bool{}
+	return func(ctx context.Context, form FlowForm) (map[string]any, error) {
+		names := fieldNames(form.Fields)
+		slices.Sort(names)
+		key := form.StepID + "\x00" + strings.Join(names, "\x00")
+		if seen[key] {
+			return nil, &FlowStepMissingError{Flow: form.Flow, StepID: form.StepID, Repeated: true}
+		}
+		seen[key] = true
+
+		own := byID[form.StepID]
+		for _, n := range names {
+			if _, set := own[n]; ambiguous[n] && !set {
+				return nil, &FlowFieldAmbiguousError{Flow: form.Flow, StepID: form.StepID, Field: n, Steps: owners[n]}
+			}
+		}
+		values := maps.Clone(pool)
+		maps.Copy(values, own)
+		return fillFields(ctx, nil, form, form.Fields, values, nil)
+	}
 }
 
 // subentryFlows serializes the subentry flows of each config entry within the provider process.
