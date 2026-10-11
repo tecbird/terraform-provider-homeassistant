@@ -367,6 +367,57 @@ resource "homeassistant_integration" "kept" {
 	})
 }
 
+// A form may be answered from `sensitive_steps` alone (ADR-0021): such an entry is created without
+// `steps`, and a changed secret replaces it.
+func TestAccIntegration_SecretsOnly(t *testing.T) {
+	const addr = "homeassistant_integration.secret"
+	config := func(name string) string {
+		return acctest.ProviderConfig + `
+resource "homeassistant_integration" "secret" {
+  domain          = "local_calendar"
+  sensitive_steps = { user = { calendar_name = "` + name + `" } }
+}
+`
+	}
+	var firstID string
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             checkCalendarsGone(t, "Acc Secret", "Acc Secret 2"),
+		Steps: []resource.TestStep{
+			{
+				Config: config("Acc Secret"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "title", "Acc Secret"),
+					resource.TestCheckResourceAttrWith(addr, "id", func(id string) error { firstID = id; return nil }),
+				),
+			},
+			{
+				Config: config("Acc Secret"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: config("Acc Secret 2"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "title", "Acc Secret 2"),
+					checkCalendarsGone(t, "Acc Secret"),
+					resource.TestCheckResourceAttrWith(addr, "id", func(id string) error {
+						if id == firstID {
+							t.Errorf("entry_id %s did not change", id)
+						}
+						return nil
+					}),
+				),
+			},
+		},
+	})
+}
+
 func TestAccIntegration_FlowErrors(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },

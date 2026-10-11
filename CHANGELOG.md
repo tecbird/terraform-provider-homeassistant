@@ -23,9 +23,10 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   firmware version, a numeric identifier component); those values are exposed as strings (#79).
 - `homeassistant_integration`: `steps` is optional, so `tofu plan -generate-config-out` after an
   import writes a configuration that plans without errors (`steps = null`). Only creating or
-  replacing an entry needs the steps; a plan that would do it without them fails before anything
-  is deleted. Removing recorded steps from the configuration only forgets them, instead of
-  failing. States with recorded steps, with or without `ignore_changes`, plan no changes.
+  replacing an entry needs a step, in `steps` or, for a form of secrets only, in
+  `sensitive_steps`; a plan that would do it without one fails before anything is deleted.
+  Removing recorded steps from the configuration only forgets them, instead of failing. States
+  with recorded steps, with or without `ignore_changes`, plan no changes.
 
 ## 1.0.0
 
