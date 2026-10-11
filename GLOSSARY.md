@@ -50,7 +50,11 @@ Hue, …).
 with (host, password, …) **cannot be read back** via the API.
 
 **Config flow** — The step-by-step wizard (exposed over REST) that creates a config entry. Each
-step returns either a `form` (with a `step_id` and data schema), `create_entry`, or `abort`.
+step returns either a `form` (with a `step_id` and data schema), a `menu`, `create_entry`, or
+`abort`.
+
+**Menu** — A config-flow step that offers a choice of next steps (`menu_options`) instead of
+fields. It is answered with the one field `next_step_id`, the `step_id` of the chosen option.
 
 **Reconfigure flow** — A config flow started with an existing `entry_id`. It changes a config
 entry's data in place. Only some integrations implement it.

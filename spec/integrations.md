@@ -15,19 +15,25 @@ loop on result.type:
                    a step already submitted once → abort + error (no loops)
                    POST /api/config/config_entries/flow/<flow_id>   step.data ∪ step.sensitive_data
                    (on a HTTP error, e.g. 400 for data not matching the schema → abort + error)
+  "menu"         → as "form"; the step's data must be exactly {"next_step_id": <option>}, with
+                   <option> one of result.menu_options (else abort + error naming the options)
   "create_entry" → return result.result.entry_id
   "abort"        → reconfigure (entryID set) with reason "reconfigure_successful" → return entryID;
                    otherwise error with result.reason (HA already ended the flow, no DELETE)
-  other          → abort + error (unsupported: external steps, progress, menus)
+  other          → abort + error (unsupported: external steps, progress)
 ```
+
+A menu offers a choice of next steps instead of fields. HA sends `menu_options` as a list of
+`step_id`s or as an object from `step_id` to label, and takes the choice as the one field
+`next_step_id`. It then shows the chosen step, usually a form with that `step_id`.
 
 "abort" in the right-hand column means `DELETE /api/config/config_entries/flow/<flow_id>`. It is
 sent even if the context was cancelled. Steps are matched by `step_id`, not by position. On a key
 present in both maps, `sensitive_data` wins.
 
-The loop only asks the caller for the data of each form. `homeassistant_integration` answers by
-`step_id` as above; the typed integrations answer from field values (see *Answering forms from
-fields*), which may answer the same `step_id` more than once.
+The loop only asks the caller for the data of each form and menu. `homeassistant_integration`
+answers by `step_id` as above; the typed integrations answer from field values (see *Answering
+forms from fields*), which may answer the same `step_id` more than once and cannot answer a menu.
 
 Unit-tested against a fake HTTP server, with no real HA.
 
@@ -50,6 +56,15 @@ resource "homeassistant_integration" "cloud" {
     user = { password = var.cloud_password }
   }
 }
+
+# The template helper's flow starts with a menu of entity types.
+resource "homeassistant_integration" "answer" {
+  domain = "template"
+  steps = {
+    user   = { next_step_id = "sensor" }
+    sensor = { name = "Answer", state = "{{ 42 }}" }
+  }
+}
 ```
 
 | Argument | Type | |
@@ -63,7 +78,9 @@ The steps are two dynamic objects keyed by `step_id` (ADR-0021, which supersedes
 `step_id` cannot appear twice. A step's driver input is `steps[id]` as `data` and
 `sensitive_steps[id]` as `sensitive_data`. A step may appear in either object or in both; the two
 are merged per step, and on a field present in both, `sensitive_steps` wins. A form without
-fields is answered by `{}`.
+fields is answered by `{}`. A menu is answered by a step with the menu's `step_id` and the one
+field `next_step_id`, naming the chosen option (#65); the chosen option's form is a step of its
+own. Template and group helpers start with such a menu.
 
 | Computed | |
 |---|---|

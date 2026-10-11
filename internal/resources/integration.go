@@ -66,7 +66,9 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			Description: "The answers to the config flow's forms, as an object from `step_id` to " +
 				"the form's fields, e.g. `{ user = { host = \"192.168.1.50\" } }`. Each form Home " +
 				"Assistant shows is answered by the step with its `step_id`; a form without fields " +
-				"is answered by `{}`. If Home Assistant asks for a step that is not given, or " +
+				"is answered by `{}`. A menu is answered by `next_step_id`, the `step_id` of the " +
+				"chosen option, e.g. `{ user = { next_step_id = \"sensor\" }, sensor = { ... } }`. " +
+				"If Home Assistant asks for a step that is not given, or " +
 				"rejects the data, the flow is aborted and nothing is created. Changing the steps " +
 				"replaces the entry, except right after an import, when they are only recorded.",
 			CustomType:    dyntype.Type{},
@@ -90,8 +92,8 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 		Description: "A config entry of an integration, created by answering its config flow with " +
 			"the given steps. Home Assistant cannot return the data an entry was created with, so " +
 			"the steps are never compared with Home Assistant: changing them replaces the entry, " +
-			"and only an entry that is gone is detected as drift. Flows that need a menu, a " +
-			"browser login, or a button press on a device are not supported.",
+			"and only an entry that is gone is detected as drift. Flows that need a browser " +
+			"login or a button press on a device are not supported.",
 		Attributes: attrs,
 	}
 }
