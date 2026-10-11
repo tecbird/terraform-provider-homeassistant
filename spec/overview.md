@@ -56,6 +56,7 @@ Which operation uses which transport:
 | Instance config | REST | `GET /api/config` |
 | Automation / script / scene config | REST | `GET/POST/DELETE /api/config/<domain>/config/<id>` |
 | Config flows (create, reconfigure) | REST | `POST /api/config/config_entries/flow`, `POST/DELETE …/flow/<flow_id>` |
+| Options flows (read, set options) | REST | `POST /api/config/config_entries/options/flow`, `POST/DELETE …/options/flow/<flow_id>` |
 | Delete config entry | REST | `DELETE /api/config/config_entries/entry/<entry_id>` |
 | Read config entries | WS | `config_entries/get` |
 | Floor / area / label registry | WS | `config/<x>_registry/list|create|update|delete` |
@@ -92,6 +93,7 @@ Which operation uses which transport:
 | `homeassistant_input_boolean`, `_number`, `_text`, `_select`, `_datetime`, `_button` | generated | [helpers.md](helpers.md) |
 | `homeassistant_dashboard` | `url_path` | [dashboards.md](dashboards.md) |
 | `homeassistant_integration` | `entry_id` | [integrations.md](integrations.md) |
+| `homeassistant_integration_options` | `entry_id` | [integrations.md](integrations.md) |
 | `homeassistant_esphome`, `homeassistant_mqtt` | `entry_id` | [integrations.md](integrations.md) |
 
 ### Functions (ADR-0007)
