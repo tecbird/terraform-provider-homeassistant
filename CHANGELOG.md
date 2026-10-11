@@ -18,6 +18,11 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities, `gosec` findings
   of medium severity or above, and fixable CRITICAL/HIGH Trivy findings fail the run; everything
   else goes to code scanning alerts.
+- `homeassistant_integration`: `steps` is optional, so `tofu plan -generate-config-out` after an
+  import writes a configuration that plans without errors (`steps = null`). Only creating or
+  replacing an entry needs the steps; a plan that would do it without them fails before anything
+  is deleted. Removing recorded steps from the configuration only forgets them, instead of
+  failing. States with recorded steps, with or without `ignore_changes`, plan no changes.
 
 ## 1.0.0
 

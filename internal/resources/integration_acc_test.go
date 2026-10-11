@@ -2,11 +2,15 @@ package resources_test
 
 import (
 	"context"
+	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
@@ -148,13 +152,13 @@ func TestAccIntegration(t *testing.T) {
 	})
 }
 
-func TestAccIntegration_Import(t *testing.T) {
-	acctest.SharedInstance(t)
-	const addr = "homeassistant_integration.imported"
+// calendarOutsideTofu creates a local_calendar entry outside Tofu, as the UI would, deletes it when
+// the test ends, and returns its entry_id.
+func calendarOutsideTofu(t *testing.T, name string) string {
+	t.Helper()
 	ctx := context.Background()
-	flows := client.NewConfigFlows(haClient(t).REST)
-	id, err := flows.Run(ctx, "local_calendar", "", []client.FlowStep{
-		{StepID: "user", Data: map[string]any{"calendar_name": "Acc Imported"}},
+	id, err := client.NewConfigFlows(haClient(t).REST).Run(ctx, "local_calendar", "", []client.FlowStep{
+		{StepID: "user", Data: map[string]any{"calendar_name": name}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -164,6 +168,13 @@ func TestAccIntegration_Import(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	return id
+}
+
+func TestAccIntegration_Import(t *testing.T) {
+	acctest.SharedInstance(t)
+	const addr = "homeassistant_integration.imported"
+	id := calendarOutsideTofu(t, "Acc Imported")
 
 	config := acctest.ProviderConfig + `
 resource "homeassistant_integration" "imported" {
@@ -205,6 +216,152 @@ resource "homeassistant_integration" "imported" {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
+			},
+		},
+	})
+}
+
+func TestAccIntegration_GenerateConfig(t *testing.T) {
+	acctest.SharedInstance(t)
+	const addr = "homeassistant_integration.generated"
+	id := calendarOutsideTofu(t, "Acc Generated")
+	// What `tofu plan -generate-config-out` writes after the import.
+	generated := acctest.ProviderConfig + `
+resource "homeassistant_integration" "generated" {
+  domain          = "local_calendar"
+  sensitive_steps = null # sensitive
+  steps           = null
+}
+`
+	importBlock := fmt.Sprintf(`
+import {
+  to = %s
+  id = %q
+}
+`, addr, id)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// `tofu plan -generate-config-out` with an import block: the generated configuration
+				// leaves the steps null, and plans the import without changes.
+				Config:          acctest.ProviderConfig,
+				ResourceName:    addr,
+				ImportState:     true,
+				ImportStateKind: resource.ImportBlockWithID,
+				ImportStateId:   id,
+				GenerateConfig:  true,
+				ImportPlanChecks: resource.ImportPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionNoop),
+						plancheck.ExpectKnownValue(addr, tfjsonpath.New("domain"), knownvalue.StringExact("local_calendar")),
+						plancheck.ExpectKnownValue(addr, tfjsonpath.New("steps"), knownvalue.Null()),
+					},
+				},
+			},
+			{
+				// Applying the import with the configuration as generated changes nothing.
+				Config: generated + importBlock,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionNoop)},
+				},
+				Check: resource.TestCheckResourceAttr(addr, "id", id),
+			},
+			{
+				Config: generated,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				// A replacement is a create, which needs the steps.
+				Config:      strings.Replace(generated, `"local_calendar"`, `"local_todo"`, 1),
+				ExpectError: regexp.MustCompile(`Missing steps`),
+			},
+			{
+				// Written later, the steps are only recorded.
+				Config: strings.Replace(generated, "steps           = null",
+					`steps           = { user = { calendar_name = "Acc Generated" } }`, 1),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				Check: resource.TestCheckResourceAttr(addr, "id", id),
+			},
+		},
+	})
+}
+
+// An entry imported and given `steps = { user = {} }` with `ignore_changes`, as states written by
+// 1.0.0 have it, keeps planning no changes, also once the steps are gone from the configuration.
+// Removing them without `ignore_changes` only forgets them.
+func TestAccIntegration_StepsAfterImport(t *testing.T) {
+	acctest.SharedInstance(t)
+	const addr = "homeassistant_integration.kept"
+	id := calendarOutsideTofu(t, "Acc Kept")
+	config := func(body string) string {
+		return acctest.ProviderConfig + `
+resource "homeassistant_integration" "kept" {
+  domain = "local_calendar"
+` + body + `
+}
+`
+	}
+	const ignore = "\n  lifecycle { ignore_changes = [steps] }"
+	empty := config(`  steps  = { user = {} }`)
+	sameID := resource.TestCheckResourceAttr(addr, "id", id)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             checkCalendarsGone(t, "Acc Kept"),
+		Steps: []resource.TestStep{
+			{
+				Config:             empty,
+				ResourceName:       addr,
+				ImportState:        true,
+				ImportStateId:      id,
+				ImportStatePersist: true,
+			},
+			{
+				Config: empty,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("steps"),
+						knownvalue.ObjectExact(map[string]knownvalue.Check{"user": knownvalue.ObjectExact(nil)})),
+				},
+			},
+			{
+				Config: config(`  steps  = { user = {} }` + ignore),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: config(ignore),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: config(""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("steps"), knownvalue.Null()),
+				},
+				Check: sameID,
+			},
+			{
+				Config: config(`  steps  = { user = { calendar_name = "Acc Kept" } }`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				Check: sameID,
 			},
 		},
 	})
