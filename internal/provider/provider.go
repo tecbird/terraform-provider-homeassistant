@@ -97,6 +97,7 @@ func (p *HomeAssistantProvider) Resources(_ context.Context) []func() resource.R
 	return []func() resource.Resource{
 		resources.NewAutomation,
 		resources.NewArea,
+		resources.NewCounter,
 		resources.NewDashboard,
 		resources.NewDeviceSettings,
 		resources.NewEntitySettings,
@@ -112,7 +113,9 @@ func (p *HomeAssistantProvider) Resources(_ context.Context) []func() resource.R
 		resources.NewLabel,
 		resources.NewMQTT,
 		resources.NewScene,
+		resources.NewSchedule,
 		resources.NewScript,
+		resources.NewTimer,
 	}
 }
 

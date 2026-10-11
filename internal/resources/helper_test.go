@@ -82,6 +82,15 @@ func TestHelperRoundTrip(t *testing.T) {
 			"has_date": types.BoolValue(true), "has_time": types.BoolValue(false), "initial": types.StringNull(),
 		}},
 		{NewInputButton(), map[string]attr.Value{}},
+		{NewCounter(), map[string]attr.Value{
+			"initial": types.Int64Value(5), "minimum": types.Int64Value(-3), "maximum": types.Int64Null(),
+			"step": types.Int64Value(2), "restore": types.BoolValue(false),
+		}},
+		{NewTimer(), map[string]attr.Value{"duration": types.StringValue("0:05:00"), "restore": types.BoolValue(true)}},
+		{NewSchedule(), scheduleAttrs(map[string][][2]string{
+			"monday":  {{"07:00:00", "12:00:00"}, {"13:00:00", "24:00:00"}},
+			"tuesday": {},
+		})},
 	} {
 		r := tc.r.(*helperResource)
 		t.Run(r.spec.domain, func(t *testing.T) {
@@ -116,5 +125,47 @@ func TestHelperRoundTrip(t *testing.T) {
 				t.Errorf("round trip = %v, want %v", got, obj)
 			}
 		})
+	}
+}
+
+// scheduleAttrs returns the weekday attributes of a schedule. Days not in ranges have no ranges.
+func scheduleAttrs(ranges map[string][][2]string) map[string]attr.Value {
+	attrs := map[string]attr.Value{}
+	for _, day := range scheduleDays {
+		elems := []attr.Value{}
+		for _, r := range ranges[day] {
+			elems = append(elems, types.ObjectValueMust(scheduleTimeRangeType.AttrTypes, map[string]attr.Value{
+				scheduleFrom: types.StringValue(r[0]),
+				scheduleTo:   types.StringValue(r[1]),
+			}))
+		}
+		attrs[day] = types.ListValueMust(scheduleTimeRangeType, elems)
+	}
+	return attrs
+}
+
+// TestHelperObjectSchedule reads a schedule as HA reports it, with a field the provider does not
+// model (`data`) on a range. HA reports all seven days.
+func TestHelperObjectSchedule(t *testing.T) {
+	r := NewSchedule().(*helperResource)
+	typ := helperType(t, r)
+	h := client.Helper{
+		"id": "tariff", "name": "Tariff",
+		"monday": []any{map[string]any{"from": "22:00:00", "to": "24:00:00", "data": map[string]any{"price": 0.1}}},
+	}
+	for _, day := range scheduleDays[1:] {
+		h[day] = []any{}
+	}
+	got, diags := r.helperObject(typ, h)
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	want := map[string]attr.Value{
+		"id": types.StringValue("tariff"), "entity_id": types.StringValue("schedule.tariff"),
+		"name": types.StringValue("Tariff"), "icon": types.StringNull(),
+	}
+	maps.Copy(want, scheduleAttrs(map[string][][2]string{"monday": {{"22:00:00", "24:00:00"}}}))
+	if !got.Equal(types.ObjectValueMust(typ.AttrTypes, want)) {
+		t.Errorf("object = %v, want %v", got, want)
 	}
 }
