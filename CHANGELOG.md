@@ -6,6 +6,12 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 ## Unreleased
 
+- New resources `homeassistant_counter`, `homeassistant_timer` and `homeassistant_schedule`, with
+  import and plan-time validation. They are typed like the `input_*` helpers. Weekdays of a
+  schedule are attributes (`monday` to `sunday`), each a list of `{ from, to }` time ranges. Times
+  and a timer's `duration` must be written the way Home Assistant stores them (`07:00:00`,
+  `0:05:00`). A schedule's per-range `data` is not supported yet, so updating a schedule that has
+  `data` set in Home Assistant clears it (#68).
 - Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
   2026.5.4 and 2026.10.0.
 - Security: the provider binary is built with Go 1.26.9 (`toolchain` in `go.mod`) instead of
