@@ -54,20 +54,33 @@ func storedBaseline(ctx context.Context, private privateGetter) ([]byte, diag.Di
 // latter with the prior value by semantic equality (ADR-0006). baseline is the raw private state
 // value, nil if there is none (state from v0.1.0, or after import).
 func refreshedConfig(prior dyntype.Value, read json.RawMessage, baseline []byte) (dyntype.Value, error) {
-	if baseline != nil && !prior.IsNull() && !prior.IsUnknown() {
-		var stored string
-		if err := json.Unmarshal(baseline, &stored); err != nil {
-			return dyntype.Value{}, fmt.Errorf("decoding the stored baseline: %w", err)
-		}
-		hash, err := dyntype.Hash(read)
+	if !prior.IsNull() && !prior.IsUnknown() {
+		match, err := matchesBaseline(read, baseline)
 		if err != nil {
 			return dyntype.Value{}, err
 		}
-		if hash == stored {
+		if match {
 			return prior, nil
 		}
 	}
 	return dyntype.FromJSON(read)
+}
+
+// matchesBaseline reports whether read hashes the same as the raw private state value baseline.
+// It is false without a baseline.
+func matchesBaseline(read json.RawMessage, baseline []byte) (bool, error) {
+	if baseline == nil {
+		return false, nil
+	}
+	var stored string
+	if err := json.Unmarshal(baseline, &stored); err != nil {
+		return false, fmt.Errorf("decoding the stored baseline: %w", err)
+	}
+	hash, err := dyntype.Hash(read)
+	if err != nil {
+		return false, err
+	}
+	return hash == stored, nil
 }
 
 // addSaveError reports err from saving a `config`. Home Assistant rejecting the config (a 400 on

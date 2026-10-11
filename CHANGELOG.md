@@ -6,6 +6,10 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 ## Unreleased
 
+- New resource `homeassistant_energy_preferences`: the Energy dashboard's sources and tracked devices,
+  as dynamic `energy_sources`, `device_consumption` and `device_consumption_water`. There is one per
+  instance. Create fails if preferences already exist (import them), and destroy resets them to
+  empty lists (#63).
 - Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
   2026.5.4 and 2026.10.0.
 
