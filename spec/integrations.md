@@ -102,7 +102,7 @@ resource "homeassistant_integration_subentry" "kitchen_agent" {
 |---|---|---|
 | `entry_id` | string | required, forces replacement |
 | `subentry_type` | string | required, as the integration names it (`plane`, `conversation`, …); forces replacement |
-| `steps` | as for `homeassistant_integration` | required, at least one step; reconfigure, else forces replacement |
+| `steps` | as for `homeassistant_integration` | optional, but a create needs it; at least one step; reconfigure, else forces replacement; neither while null before or after (see **Import**) |
 | `sensitive_steps` | as for `homeassistant_integration`, sensitive | optional; reconfigure, else forces replacement |
 
 On create, `steps` and `sensitive_steps` work exactly as for `homeassistant_integration`
@@ -141,20 +141,29 @@ flow ends with the abort `reconfigure_successful`.
   same entry run one at a time within the provider, so parallel creates cannot mistake each
   other's subentries. An `abort` is an error with HA's reason, as for config flows.
   Then `config_entries/get_single` reads `supports_reconfigure`; if that fails, the subentry is
-  kept with the flag null (a warning), and the next refresh reads it.
+  kept with the flag null (a warning), and the next refresh reads it. A plan that creates the
+  subentry without `steps` fails with "Missing steps"; OpenTofu plans a replacement as a create
+  too, so a changed `entry_id` or `subentry_type` of an imported subentry fails before it is
+  deleted.
 - **Read:** `config_entries/subentries/list`, matched on `subentry_id`, and
   `config_entries/get_single` for `supports_reconfigure`. If the subentry or its config entry is
   gone → remove from state. Inputs are never compared.
 - **Delete:** `config_entries/subentries/delete`. A subentry or entry that is already gone is not an
   error. HA removes the subentry's devices and entities with it.
-- **Import:** by `<entry_id>/<subentry_id>`. As for `homeassistant_integration`, the steps are null
-  after import, and the next plan only records them.
+- **Import:** by `<entry_id>/<subentry_id>`. The steps are null after import: neither
+  `subentries/list` nor `get_single` returns a subentry's data, and the reconfigure form, which
+  pre-fills it, has its own `step_id` (`forecast_solar`: `reconfigure`, not `user`). So
+  `tofu plan -generate-config-out` writes `steps = null`, which plans no changes; an imported
+  subentry needs steps only to be replaced. Steps written later are only recorded, without a
+  reconfigure flow; removing them again only forgets them. Null `steps` in state mean the
+  provider does not know the steps.
 - **Update:** changed `steps` or `sensitive_steps` run the subentry's **reconfigure flow** if
   `supports_reconfigure` is true in state. It changes the subentry's data in place: the
   `subentry_id`, and with it the subentry's devices and entities, stay. Types without a reconfigure
   flow, or with the flag null, are replaced, as for `homeassistant_integration` (ADR-0014). The
   plan marks `title` and `unique_id` unknown, because the flow may change them, and the update
-  reads them back afterwards. Right after an import the steps are only recorded, as above.
+  reads them back afterwards. While the steps are null before or after, they are only recorded
+  or forgotten, as above.
 
 Reconfigure flows show the fields of the create flow, but not under the same `step_id`s
 (`forecast_solar`: `user`, then `reconfigure`), and not always all of them (an AI integration's
@@ -179,8 +188,11 @@ Errors: an unknown `entry_id` or `subentry_type` gets a hint naming the attribut
 **Testing.** Unit tests against fakes; acceptance test with `forecast_solar`, whose config flow
 creates the entry with one plane. A second plane needs an API key in the entry's options, so the
 test checks that abort, imports the first plane, reconfigures it in place (same `subentry_id`, new
-title), deletes it outside Tofu so it is created again, and reconfigures the new one. Replacement
-of a type without a reconfigure flow is unit-tested only.
+title), deletes it outside Tofu so it is created again, and reconfigures the new one. A second
+test imports the plane with `-generate-config-out` and checks that the generated configuration
+plans no changes, that a replacement without steps fails, and that writing and removing the steps
+neither reconfigures nor replaces it. Replacement of a type without a reconfigure flow is
+unit-tested only.
 
 ## `data.homeassistant_integration`
 

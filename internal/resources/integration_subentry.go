@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/toelke/terraform-provider-homeassistant/internal/client"
@@ -102,9 +103,12 @@ func (r *integrationSubentryResource) Schema(_ context.Context, _ resource.Schem
 					"flow answers each of its forms from the steps by the form's fields: a field " +
 					"takes its value from the step with the form's `step_id`, else from any step " +
 					"that has it, and fields the form does not show are left out. Otherwise a " +
-					"change replaces the subentry. Right after an import the steps are only recorded.",
+					"change replaces the subentry. Right after an import the steps are only recorded. " +
+					"Creating the subentry needs them. An imported subentry can do without them: " +
+					"they stay null until set, which is what `tofu plan -generate-config-out` " +
+					"writes, and removing them later only forgets them.",
 				CustomType:    dyntype.Type{},
-				Required:      true,
+				Optional:      true,
 				Validators:    []validator.Dynamic{stepsValidator{}},
 				PlanModifiers: []planmodifier.Dynamic{replaceUnlessReconfigurable},
 			},
@@ -135,25 +139,29 @@ func (r *integrationSubentryResource) Schema(_ context.Context, _ resource.Schem
 }
 
 // subentryStepsChanged requires replacement for changed steps, unless they are only recorded
-// after an import, or the subentry is reconfigured instead.
+// after an import or forgotten, or the subentry is reconfigured instead.
 func subentryStepsChanged(ctx context.Context, req planmodifier.DynamicRequest, resp *dynamicplanmodifier.RequiresReplaceIfFuncResponse) {
-	var prior dyntype.Value
+	var prior, planned dyntype.Value
 	var reconfigurable types.Bool
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, stepsPath, &prior)...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, stepsPath, &planned)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, supportsReconfigurePath, &reconfigurable)...)
-	resp.RequiresReplace = !imported(prior) && !reconfigurable.ValueBool()
+	resp.RequiresReplace = !imported(prior) && !imported(planned) && !reconfigurable.ValueBool()
 }
 
-// imported reports whether the prior steps are null, which they are only after an import: the
-// steps cannot be read back, so the first ones written are recorded, not applied.
-func imported(priorSteps dyntype.Value) bool {
-	return priorSteps.IsNull() || priorSteps.IsUnderlyingValueNull()
+// imported reports whether the steps are null, which means the provider does not know them: in
+// state after an import or after they were removed from the configuration, in a plan when they are
+// left out. The steps cannot be read back, so the first ones written are recorded, not applied,
+// and removing them only forgets them.
+func imported(steps dyntype.Value) bool {
+	return steps.IsNull() || steps.IsUnderlyingValueNull()
 }
 
 // reconfigures reports whether updating state to plan runs the reconfigure flow: the steps change,
-// they are not only being recorded after an import, and the type has a reconfigure flow.
+// they are not only being recorded after an import or forgotten, and the type has a reconfigure
+// flow.
 func reconfigures(state, plan integrationSubentryModel) bool {
-	if imported(state.Steps) || !state.SupportsReconfigure.ValueBool() {
+	if imported(state.Steps) || imported(plan.Steps) || !state.SupportsReconfigure.ValueBool() {
 		return false
 	}
 	return !stepsEqual(state.Steps, plan.Steps) || !stepsEqual(state.SensitiveSteps, plan.SensitiveSteps)
@@ -176,10 +184,15 @@ func stepsEqual(a, b dyntype.Value) bool {
 	return reflect.DeepEqual(da, db)
 }
 
-// ModifyPlan marks the title and unique ID unknown when the update reconfigures the subentry,
-// because the reconfigure flow may change them.
+// ModifyPlan fails a plan that creates the subentry without steps, and marks the title and unique
+// ID unknown when the update reconfigures the subentry, because the reconfigure flow may change
+// them.
 func (r *integrationSubentryResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	if req.State.Raw.IsNull() {
+		requireSubentrySteps(ctx, req.Plan, resp)
 		return
 	}
 	var state, plan integrationSubentryModel
@@ -190,6 +203,20 @@ func (r *integrationSubentryResource) ModifyPlan(ctx context.Context, req resour
 	}
 	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("title"), types.StringUnknown())...)
 	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("unique_id"), types.StringUnknown())...)
+}
+
+// requireSubentrySteps fails a plan that creates the subentry without steps, since only an
+// imported subentry can do without them. A replacement is planned as a create too, so this covers
+// a changed `entry_id` or `subentry_type` and `-replace`.
+func requireSubentrySteps(ctx context.Context, plan tfsdk.Plan, resp *resource.ModifyPlanResponse) {
+	var steps dyntype.Value
+	resp.Diagnostics.Append(plan.GetAttribute(ctx, stepsPath, &steps)...)
+	if !resp.Diagnostics.HasError() && imported(steps) {
+		resp.Diagnostics.AddAttributeError(stepsPath, "Missing steps", "Creating the subentry runs "+
+			"its subentry flow, which needs `steps`, e.g. `{ user = { declination = 30 } }`. Only a "+
+			"subentry imported from Home Assistant can do without them, and replacing it creates "+
+			"a new one.")
+	}
 }
 
 func (r *integrationSubentryResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
