@@ -123,6 +123,7 @@ func TestReconfigures(t *testing.T) {
 		"no reconfigure flow":     {state: model(steps, null, types.BoolValue(false)), plan: model(changed, null, types.BoolValue(false))},
 		"flag unknown":            {state: model(steps, null, types.BoolNull()), plan: model(changed, null, types.BoolNull())},
 		"after import":            {state: model(null, null, types.BoolValue(true)), plan: model(changed, null, types.BoolValue(true))},
+		"steps removed":           {state: model(steps, null, types.BoolValue(true)), plan: model(null, null, types.BoolValue(true))},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -133,42 +134,100 @@ func TestReconfigures(t *testing.T) {
 	}
 }
 
-// Changed steps replace the subentry only if its type has no reconfigure flow, and never right
-// after an import.
-func TestSubentryStepsChanged(t *testing.T) {
+// subentryData returns the schema and a raw `homeassistant_integration_subentry` with the given
+// steps and supports_reconfigure.
+func subentryData(t *testing.T, steps dyntype.Value, reconfigurable types.Bool) (resource.SchemaResponse, tftypes.Value) {
+	t.Helper()
 	ctx := t.Context()
 	var sr resource.SchemaResponse
 	NewIntegrationSubentry().Schema(ctx, resource.SchemaRequest{}, &sr)
-	state := func(steps dyntype.Value, reconfigurable types.Bool) tfsdk.State {
-		s := tfsdk.State{Schema: sr.Schema, Raw: tftypes.NewValue(sr.Schema.Type().TerraformType(ctx), nil)}
-		if d := s.SetAttribute(ctx, stepsPath, steps); d.HasError() {
-			t.Fatal(d)
-		}
-		if d := s.SetAttribute(ctx, supportsReconfigurePath, reconfigurable); d.HasError() {
-			t.Fatal(d)
-		}
-		return s
+	s := tfsdk.State{Schema: sr.Schema, Raw: tftypes.NewValue(sr.Schema.Type().TerraformType(ctx), nil)}
+	if d := s.SetAttribute(ctx, stepsPath, steps); d.HasError() {
+		t.Fatal(d)
 	}
+	if d := s.SetAttribute(ctx, supportsReconfigurePath, reconfigurable); d.HasError() {
+		t.Fatal(d)
+	}
+	return sr, s.Raw
+}
+
+// Changed steps replace the subentry only if its type has no reconfigure flow, and never right
+// after an import or when they are removed.
+func TestSubentryStepsChanged(t *testing.T) {
+	ctx := t.Context()
 	steps := mustDyn(t, `{"user": {"declination": 30}}`)
+	changed := mustDyn(t, `{"user": {"declination": 35}}`)
+	null := dyntype.NewNull()
 	cases := map[string]struct {
-		state tfsdk.State
-		want  bool
+		prior, planned dyntype.Value
+		reconfigurable types.Bool
+		want           bool
 	}{
-		"reconfigurable":     {state: state(steps, types.BoolValue(true))},
-		"not reconfigurable": {state: state(steps, types.BoolValue(false)), want: true},
-		"flag not read":      {state: state(steps, types.BoolNull()), want: true},
-		"after import":       {state: state(dyntype.NewNull(), types.BoolValue(false))},
-		"after import, flag": {state: state(dyntype.NewNull(), types.BoolValue(true))},
+		"reconfigurable":              {prior: steps, planned: changed, reconfigurable: types.BoolValue(true)},
+		"not reconfigurable":          {prior: steps, planned: changed, reconfigurable: types.BoolValue(false), want: true},
+		"flag not read":               {prior: steps, planned: changed, reconfigurable: types.BoolNull(), want: true},
+		"after import":                {prior: null, planned: changed, reconfigurable: types.BoolValue(false)},
+		"after import, flag":          {prior: null, planned: changed, reconfigurable: types.BoolValue(true)},
+		"removed, not reconfigurable": {prior: steps, planned: null, reconfigurable: types.BoolValue(false)},
+		"removed, flag not read":      {prior: steps, planned: null, reconfigurable: types.BoolNull()},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			sr, prior := subentryData(t, tc.prior, tc.reconfigurable)
+			_, planned := subentryData(t, tc.planned, tc.reconfigurable)
 			var resp dynamicplanmodifier.RequiresReplaceIfFuncResponse
-			subentryStepsChanged(ctx, planmodifier.DynamicRequest{State: tc.state}, &resp)
+			subentryStepsChanged(ctx, planmodifier.DynamicRequest{
+				State: tfsdk.State{Schema: sr.Schema, Raw: prior},
+				Plan:  tfsdk.Plan{Schema: sr.Schema, Raw: planned},
+			}, &resp)
 			if resp.Diagnostics.HasError() {
 				t.Fatal(resp.Diagnostics)
 			}
 			if resp.RequiresReplace != tc.want {
 				t.Errorf("RequiresReplace = %v, want %v", resp.RequiresReplace, tc.want)
+			}
+		})
+	}
+}
+
+// A plan that creates the subentry needs steps; updating or destroying an imported one does not.
+func TestSubentryModifyPlanRequiresStepsToCreate(t *testing.T) {
+	steps := mustDyn(t, `{"user": {"declination": 30}}`)
+	null := dyntype.NewNull()
+	unknown := dyntype.Value{DynamicValue: basetypes.NewDynamicUnknown()}
+	cases := map[string]struct {
+		state, plan *dyntype.Value // nil: no object, i.e. a create or a destroy
+		wantErr     bool
+	}{
+		"create with steps":         {plan: &steps},
+		"create with unknown steps": {plan: &unknown},
+		"create without steps":      {plan: &null, wantErr: true},
+		"update without steps":      {state: &null, plan: &null},
+		"forget steps":              {state: &steps, plan: &null},
+		"destroy without steps":     {state: &null},
+	}
+	raw := func(steps *dyntype.Value) (resource.SchemaResponse, tftypes.Value) {
+		sr, v := subentryData(t, null, types.BoolValue(true))
+		if steps == nil {
+			return sr, tftypes.NewValue(v.Type(), nil)
+		}
+		_, v = subentryData(t, *steps, types.BoolValue(true))
+		return sr, v
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			sr, state := raw(tc.state)
+			_, plan := raw(tc.plan)
+			resp := resource.ModifyPlanResponse{Plan: tfsdk.Plan{Schema: sr.Schema, Raw: plan}}
+			(&integrationSubentryResource{}).ModifyPlan(t.Context(), resource.ModifyPlanRequest{
+				State: tfsdk.State{Schema: sr.Schema, Raw: state},
+				Plan:  tfsdk.Plan{Schema: sr.Schema, Raw: plan},
+			}, &resp)
+			if got := resp.Diagnostics.HasError(); got != tc.wantErr {
+				t.Fatalf("error = %v, want %v: %v", got, tc.wantErr, resp.Diagnostics)
+			}
+			if tc.wantErr && !strings.Contains(resp.Diagnostics[0].Detail(), "needs `steps`") {
+				t.Errorf("detail = %q", resp.Diagnostics[0].Detail())
 			}
 		})
 	}
