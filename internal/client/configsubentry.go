@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ConfigSubentry is the readable part of a config subentry. Like a config entry's, its input data
@@ -122,16 +123,61 @@ func (c ConfigSubentries) Create(ctx context.Context, entryID, subentryType stri
 		return ConfigSubentry{}, &FlowAbortedError{Flow: name, Reason: res.Reason}
 	}
 
-	after, err := c.List(ctx, entryID)
+	after, err := c.listAfterCreate(ctx, entryID)
 	if err != nil {
-		return ConfigSubentry{}, fmt.Errorf("reading the subentries of config entry %s after %s: %w", entryID, name, err)
+		return ConfigSubentry{}, &SubentryUnidentifiedError{
+			EntryID: entryID, SubentryType: subentryType, Title: res.Title,
+			Err: fmt.Errorf("reading the subentries of config entry %s after %s: %w", entryID, name, err),
+		}
 	}
-	return newSubentry(before, after, subentryType, res.Title)
+	return newSubentry(entryID, before, after, subentryType, res.Title)
 }
+
+// identifyBackoff are the waits between the attempts to list the subentries after a create. Tests
+// shorten them.
+var identifyBackoff = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
+
+// listAfterCreate lists the subentries of the config entry, retrying with backoff: the subentry
+// already exists, and without the list it cannot be named. The attempts run even if ctx was
+// cancelled; the client's timeout bounds each of them.
+func (c ConfigSubentries) listAfterCreate(ctx context.Context, entryID string) ([]ConfigSubentry, error) {
+	ctx = context.WithoutCancel(ctx)
+	var errs []error
+	for attempt := 0; ; attempt++ {
+		subentries, err := c.List(ctx, entryID)
+		if err == nil {
+			return subentries, nil
+		}
+		errs = append(errs, err)
+		if attempt == len(identifyBackoff) {
+			return nil, errors.Join(errs...)
+		}
+		time.Sleep(identifyBackoff[attempt])
+	}
+}
+
+// SubentryUnidentifiedError means the subentry flow created a subentry, but the provider could not
+// tell which one it is, so it cannot be put into the state.
+type SubentryUnidentifiedError struct {
+	EntryID      string
+	SubentryType string
+	// Title is the title from the flow's create_entry.
+	Title string
+	// Candidates are the subentry_ids that might be it, if any.
+	Candidates []string
+	Err        error
+}
+
+func (e *SubentryUnidentifiedError) Error() string {
+	return fmt.Sprintf("the %s subentry %q was created in config entry %s, but cannot be identified: %v",
+		e.SubentryType, e.Title, e.EntryID, e.Err)
+}
+
+func (e *SubentryUnidentifiedError) Unwrap() error { return e.Err }
 
 // newSubentry returns the subentry of subentryType that is in after but not in before. If there are
 // several, the one with the title is picked.
-func newSubentry(before, after []ConfigSubentry, subentryType, title string) (ConfigSubentry, error) {
+func newSubentry(entryID string, before, after []ConfigSubentry, subentryType, title string) (ConfigSubentry, error) {
 	var created []ConfigSubentry
 	for _, s := range after {
 		if s.SubentryType == subentryType && !slices.ContainsFunc(before, func(b ConfigSubentry) bool {
@@ -147,14 +193,18 @@ func newSubentry(before, after []ConfigSubentry, subentryType, title string) (Co
 	case 1:
 		return created[0], nil
 	case 0:
-		return ConfigSubentry{}, fmt.Errorf("the %s subentry %q was created, but it is not listed", subentryType, title)
+		return ConfigSubentry{}, &SubentryUnidentifiedError{
+			EntryID: entryID, SubentryType: subentryType, Title: title, Err: errors.New("it is not listed"),
+		}
 	}
 	ids := make([]string, len(created))
 	for i, s := range created {
 		ids[i] = s.SubentryID
 	}
-	return ConfigSubentry{}, fmt.Errorf("the %s subentry %q was created, but several new subentries match it: %s",
-		subentryType, title, strings.Join(ids, ", "))
+	return ConfigSubentry{}, &SubentryUnidentifiedError{
+		EntryID: entryID, SubentryType: subentryType, Title: title, Candidates: ids,
+		Err: fmt.Errorf("several new subentries match it: %s", strings.Join(ids, ", ")),
+	}
 }
 
 // SupportsReconfigure reports whether the subentries of subentryType of the config entry have a
@@ -258,7 +308,7 @@ func reconfigureAnswer(steps []FlowStep) FlowAnswer {
 		seen[key] = true
 
 		own := byID[form.StepID]
-		for _, n := range names {
+		for _, n := range append(names, sectionNames(form.Fields)...) {
 			if _, set := own[n]; ambiguous[n] && !set {
 				return nil, &FlowFieldAmbiguousError{Flow: form.Flow, StepID: form.StepID, Field: n, Steps: owners[n]}
 			}
@@ -267,6 +317,17 @@ func reconfigureAnswer(steps []FlowStep) FlowAnswer {
 		maps.Copy(values, own)
 		return fillFields(ctx, nil, form, form.Fields, values, nil)
 	}
+}
+
+// sectionNames returns the names of the sections among fields, which steps hold as nested objects.
+func sectionNames(fields []FormField) []string {
+	var names []string
+	for _, f := range fields {
+		if f.Type == "expandable" {
+			names = append(names, f.Name)
+		}
+	}
+	return names
 }
 
 // subentryFlows serializes the subentry flows of each config entry within the provider process.

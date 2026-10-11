@@ -331,7 +331,14 @@ func fillFields(ctx context.Context, rest *RESTClient, form FlowForm, fields []F
 	data := map[string]any{}
 	for _, f := range fields {
 		if f.Type == "expandable" {
-			section, err := fillFields(ctx, rest, form, f.Schema, values, files)
+			// A section's fields come from values, or from a nested object under the section's
+			// name, which wins: steps hold sections nested, in the shape a form is submitted in.
+			sectionValues := values
+			if nested, ok := values[f.Name].(map[string]any); ok {
+				sectionValues = maps.Clone(values)
+				maps.Copy(sectionValues, nested)
+			}
+			section, err := fillFields(ctx, rest, form, f.Schema, sectionValues, files)
 			if err != nil {
 				return nil, err
 			}
