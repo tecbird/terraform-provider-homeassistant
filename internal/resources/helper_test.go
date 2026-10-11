@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/toelke/terraform-provider-homeassistant/internal/client"
+	"github.com/toelke/terraform-provider-homeassistant/internal/dyntype"
 )
 
 func TestHelperFieldsLeavesOutUnset(t *testing.T) {
@@ -137,6 +138,7 @@ func scheduleAttrs(ranges map[string][][2]string) map[string]attr.Value {
 			elems = append(elems, types.ObjectValueMust(scheduleTimeRangeType.AttrTypes, map[string]attr.Value{
 				scheduleFrom: types.StringValue(r[0]),
 				scheduleTo:   types.StringValue(r[1]),
+				scheduleData: dyntype.NewJSONStringNull(),
 			}))
 		}
 		attrs[day] = types.ListValueMust(scheduleTimeRangeType, elems)
@@ -144,14 +146,13 @@ func scheduleAttrs(ranges map[string][][2]string) map[string]attr.Value {
 	return attrs
 }
 
-// TestHelperObjectSchedule reads a schedule as HA reports it, with a field the provider does not
-// model (`data`) on a range. HA reports all seven days.
+// TestHelperObjectSchedule reads a schedule as HA reports it. HA reports all seven days.
 func TestHelperObjectSchedule(t *testing.T) {
 	r := NewSchedule().(*helperResource)
 	typ := helperType(t, r)
 	h := client.Helper{
 		"id": "tariff", "name": "Tariff",
-		"monday": []any{map[string]any{"from": "22:00:00", "to": "24:00:00", "data": map[string]any{"price": 0.1}}},
+		"monday": []any{map[string]any{"from": "22:00:00", "to": "24:00:00"}},
 	}
 	for _, day := range scheduleDays[1:] {
 		h[day] = []any{}
@@ -167,5 +168,56 @@ func TestHelperObjectSchedule(t *testing.T) {
 	maps.Copy(want, scheduleAttrs(map[string][][2]string{"monday": {{"22:00:00", "24:00:00"}}}))
 	if !got.Equal(types.ObjectValueMust(typ.AttrTypes, want)) {
 		t.Errorf("object = %v, want %v", got, want)
+	}
+}
+
+// TestScheduleDataRoundTrip sends a range with data of every value type, decodes the JSON like
+// HA's reply, and reads it back: the value read back equals the config semantically, so the
+// framework keeps the prior value and the plan stays empty.
+func TestScheduleDataRoundTrip(t *testing.T) {
+	r := NewSchedule().(*helperResource)
+	typ := helperType(t, r)
+	// Key order and number spelling differ from what HA reports back.
+	const data = `{"tier": "high", "price": 0.250, "peak": true, "level": 3}`
+	rng := types.ObjectValueMust(scheduleTimeRangeType.AttrTypes, map[string]attr.Value{
+		scheduleFrom: types.StringValue("18:00:00"), scheduleTo: types.StringValue("21:00:00"),
+		scheduleData: dyntype.NewJSONString(data),
+	})
+	vals := scheduleAttrs(nil)
+	vals["monday"] = types.ListValueMust(scheduleTimeRangeType, []attr.Value{rng})
+	maps.Copy(vals, map[string]attr.Value{
+		"id": types.StringValue("tariff"), "entity_id": types.StringValue("schedule.tariff"),
+		"name": types.StringValue("Tariff"), "icon": types.StringNull(),
+	})
+	obj := types.ObjectValueMust(typ.AttrTypes, vals)
+
+	fields, err := helperFields(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(fields["monday"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"data":{"level":3,"peak":true,"price":0.25,"tier":"high"},"from":"18:00:00","to":"21:00:00"}]`
+	if eq, err := dyntype.SemanticallyEqualJSON(b, []byte(want)); err != nil || !eq {
+		t.Errorf("monday sent to HA = %s, want %s (err %v)", b, want, err)
+	}
+
+	fields["id"] = "tariff"
+	b, _ = json.Marshal(fields)
+	var h client.Helper
+	if err := json.Unmarshal(b, &h); err != nil {
+		t.Fatal(err)
+	}
+	got, diags := r.helperObject(typ, h)
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	monday := got.Attributes()["monday"].(types.List).Elements()[0].(types.Object)
+	gotData := monday.Attributes()[scheduleData].(dyntype.JSONString)
+	eq, diags := dyntype.NewJSONString(data).StringSemanticEquals(context.Background(), gotData)
+	if diags.HasError() || !eq {
+		t.Errorf("data read back = %v, want semantically equal to %v (diags %v)", gotData, data, diags)
 	}
 }

@@ -1,9 +1,11 @@
 package resources
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -100,4 +102,31 @@ func TestScheduleTimeFormats(t *testing.T) {
 			t.Errorf("to %q (%s): valid = %v, want %v", tc.s, tc.whatItIsOK, got, tc.to)
 		}
 	}
+}
+
+func TestScheduleDataValidator(t *testing.T) {
+	for _, tc := range []struct {
+		name, data, want string
+	}{
+		{"all value types", `{"s": "x", "i": 1, "f": 0.5, "b": false}`, ""},
+		{"empty object", `{}`, ""},
+		{"not JSON", `price=1`, "must be a JSON object"},
+		{"array", `[1]`, "must be a JSON object"},
+		{"null", `null`, "must be a JSON object"},
+		{"trailing text", `{} x`, "must be a JSON object"},
+		{"nested object", `{"a": {"b": 1}}`, `"a" is map`},
+		{"list value", `{"a": [1]}`, `"a" is []`},
+		{"null value", `{"a": null}`, `"a" is <nil>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &validator.StringResponse{}
+			scheduleDataValidator{}.ValidateString(context.Background(),
+				validator.StringRequest{ConfigValue: types.StringValue(tc.data)}, resp)
+			checkDiags(t, resp.Diagnostics, tc.want)
+		})
+	}
+	resp := &validator.StringResponse{}
+	scheduleDataValidator{}.ValidateString(context.Background(),
+		validator.StringRequest{ConfigValue: types.StringUnknown()}, resp)
+	checkDiags(t, resp.Diagnostics, "")
 }

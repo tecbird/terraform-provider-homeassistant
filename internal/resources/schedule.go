@@ -1,6 +1,8 @@
 package resources
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -14,6 +16,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listdefault"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/toelke/terraform-provider-homeassistant/internal/dyntype"
 )
 
 // scheduleDays are the weekdays of a schedule, in the order HA lists them. Each is an attribute
@@ -24,6 +28,9 @@ var scheduleDays = []string{"monday", "tuesday", "wednesday", "thursday", "frida
 const (
 	scheduleFrom = "from"
 	scheduleTo   = "to"
+	// scheduleData holds custom values of a time range (bool, string, int, or float), which show
+	// up in the entity's attributes while the range is active.
+	scheduleData = "data"
 )
 
 var (
@@ -37,6 +44,7 @@ var (
 	scheduleTimeRangeType = types.ObjectType{AttrTypes: map[string]attr.Type{
 		scheduleFrom: types.StringType,
 		scheduleTo:   types.StringType,
+		scheduleData: dyntype.JSONStringType{},
 	}}
 )
 
@@ -64,6 +72,16 @@ func NewSchedule() resource.Resource {
 						Required: true,
 						Validators: []validator.String{stringvalidator.RegexMatches(scheduleEndTime,
 							"must have the format HH:MM:SS, e.g. 22:00:00, or be 24:00:00")},
+					},
+					scheduleData: schema.StringAttribute{
+						Description: "Custom values of the range, as JSON text, e.g. " +
+							"`jsonencode({ price = 0.12, peak = true })`. It must be an object whose values are " +
+							"strings, numbers or booleans. Home Assistant shows them as attributes of the entity " +
+							"while the range is active. Unset, the range has none. The order of keys and the " +
+							"spelling of numbers do not matter.",
+						Optional:   true,
+						CustomType: dyntype.JSONStringType{},
+						Validators: []validator.String{scheduleDataValidator{}},
 					},
 				},
 			},
@@ -138,4 +156,38 @@ func validateScheduleDay(day string, ranges types.List) diag.Diagnostics {
 		}
 	}
 	return diags
+}
+
+// scheduleDataValidator checks that `data` is a JSON object of strings, numbers and booleans,
+// the values HA accepts.
+type scheduleDataValidator struct{}
+
+func (scheduleDataValidator) Description(context.Context) string {
+	return "must be a JSON object whose values are strings, numbers or booleans"
+}
+
+func (v scheduleDataValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v scheduleDataValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	dec := json.NewDecoder(strings.NewReader(req.ConfigValue.ValueString()))
+	dec.UseNumber()
+	var obj map[string]any
+	if err := dec.Decode(&obj); err != nil || dec.More() || obj == nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Attribute Value",
+			fmt.Sprintf("data %s, got %q.", v.Description(ctx), req.ConfigValue.ValueString()))
+		return
+	}
+	for k, e := range obj {
+		switch e.(type) {
+		case string, bool, json.Number:
+		default:
+			resp.Diagnostics.AddAttributeError(req.Path, "Invalid Attribute Value",
+				fmt.Sprintf("data %s, but %q is %T.", v.Description(ctx), k, e))
+		}
+	}
 }
