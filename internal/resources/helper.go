@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -15,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/toelke/terraform-provider-homeassistant/internal/client"
+	"github.com/toelke/terraform-provider-homeassistant/internal/dyntype"
 )
 
 // helperSpec describes one input helper domain (ADR-0013). Every helper shares the generic
@@ -137,6 +139,9 @@ func helperFields(m types.Object) (map[string]any, error) {
 // attributes of an object are left out.
 func haValue(v attr.Value) (any, error) {
 	switch v := v.(type) {
+	case dyntype.JSONString:
+		// A JSON string is passed to HA as the JSON it holds.
+		return json.RawMessage(v.ValueString()), nil
 	case types.String:
 		return v.ValueString(), nil
 	case types.Bool:
@@ -208,6 +213,16 @@ func (r *helperResource) helperObject(t types.ObjectType, h client.Helper) (type
 // attrValue converts a JSON-decoded value from HA into an attribute value of type typ. A missing
 // value, or one of the wrong JSON type, is null.
 func attrValue(typ attr.Type, raw any) (attr.Value, error) {
+	if _, ok := typ.(dyntype.JSONStringType); ok {
+		if raw == nil {
+			return dyntype.NewJSONStringNull(), nil
+		}
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		return dyntype.NewJSONString(string(b)), nil
+	}
 	switch {
 	case typ.Equal(types.StringType):
 		if s, ok := raw.(string); ok {

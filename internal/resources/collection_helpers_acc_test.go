@@ -194,13 +194,24 @@ resource "homeassistant_schedule" "test" {
   name = "Acc Schedule"
   icon = "mdi:calendar-clock"
   monday = [
-    { from = "07:00:00", to = "12:00:00" },
+    { from = "07:00:00", to = "12:00:00", data = jsonencode({ price = 0.25, peak = true, tier = "high", level = 3 }) },
     { from = "13:30:00", to = "17:00:00" },
   ]
   sunday = [{ from = "20:00:00", to = "24:00:00" }]
 }
 `,
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "monday.0.data", `{"level":3,"peak":true,"price":0.25,"tier":"high"}`),
+					resource.TestCheckNoResourceAttr(addr, "monday.1.data"),
+					checkHelper(t, "schedule", "acc_schedule", func(h client.Helper) error {
+						monday, _ := h["monday"].([]any)
+						first, _ := monday[0].(map[string]any)
+						data, _ := first["data"].(map[string]any)
+						if len(data) != 4 || data["price"] != 0.25 || data["peak"] != true || data["tier"] != "high" || data["level"] != 3.0 {
+							return fmt.Errorf("monday data in HA = %v", first)
+						}
+						return nil
+					}),
 					resource.TestCheckResourceAttr(addr, "id", "acc_schedule"),
 					resource.TestCheckResourceAttr(addr, "entity_id", "schedule.acc_schedule"),
 					resource.TestCheckResourceAttr(addr, "monday.#", "2"),
@@ -219,6 +230,50 @@ resource "homeassistant_schedule" "test" {
 				),
 			},
 			importStep(addr, "acc_schedule"),
+			{
+				// An update that does not touch the data keeps it, and a changed value is written.
+				Config: acctest.ProviderConfig + `
+resource "homeassistant_schedule" "test" {
+  name = "Acc Schedule Renamed"
+  icon = "mdi:calendar-clock"
+  monday = [
+    { from = "07:00:00", to = "12:00:00", data = jsonencode({ price = 0.5, peak = false, tier = "low", level = 4 }) },
+    { from = "13:30:00", to = "17:00:00" },
+  ]
+  sunday = [{ from = "20:00:00", to = "24:00:00" }]
+}
+`,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				Check: checkHelper(t, "schedule", "acc_schedule", func(h client.Helper) error {
+					monday, _ := h["monday"].([]any)
+					first, _ := monday[0].(map[string]any)
+					data, _ := first["data"].(map[string]any)
+					if h["name"] != "Acc Schedule Renamed" || data["price"] != 0.5 || data["peak"] != false || data["level"] != 4.0 {
+						return fmt.Errorf("schedule in HA = %v", h)
+					}
+					return nil
+				}),
+			},
+			importStep(addr, "acc_schedule"),
+			{
+				// Same config again: no drift from the data HA reads back.
+				Config: acctest.ProviderConfig + `
+resource "homeassistant_schedule" "test" {
+  name = "Acc Schedule Renamed"
+  icon = "mdi:calendar-clock"
+  monday = [
+    { from = "07:00:00", to = "12:00:00", data = jsonencode({ price = 0.5, peak = false, tier = "low", level = 4 }) },
+    { from = "13:30:00", to = "17:00:00" },
+  ]
+  sunday = [{ from = "20:00:00", to = "24:00:00" }]
+}
+`,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
 			{
 				// Dropping a day clears it; the other days stay.
 				Config: acctest.ProviderConfig + `

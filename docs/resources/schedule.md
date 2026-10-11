@@ -60,6 +60,10 @@ Required:
 - `from` (String) Start of the range, as `HH:MM:SS` (24 hours), e.g. `07:00:00`. The schedule is on from here.
 - `to` (String) End of the range, as `HH:MM:SS` (24 hours), later than `from`, e.g. `22:00:00`. Use `24:00:00` for the end of the day. The schedule is off from here.
 
+Optional:
+
+- `data` (String) Custom values of the range, as JSON text, e.g. `jsonencode({ price = 0.12, peak = true })`. It must be an object whose values are strings, numbers or booleans. Home Assistant shows them as attributes of the entity while the range is active. Unset, the range has none. The order of keys and the spelling of numbers do not matter.
+
 
 <a id="nestedatt--monday"></a>
 ### Nested Schema for `monday`
@@ -68,6 +72,10 @@ Required:
 
 - `from` (String) Start of the range, as `HH:MM:SS` (24 hours), e.g. `07:00:00`. The schedule is on from here.
 - `to` (String) End of the range, as `HH:MM:SS` (24 hours), later than `from`, e.g. `22:00:00`. Use `24:00:00` for the end of the day. The schedule is off from here.
+
+Optional:
+
+- `data` (String) Custom values of the range, as JSON text, e.g. `jsonencode({ price = 0.12, peak = true })`. It must be an object whose values are strings, numbers or booleans. Home Assistant shows them as attributes of the entity while the range is active. Unset, the range has none. The order of keys and the spelling of numbers do not matter.
 
 
 <a id="nestedatt--saturday"></a>
@@ -78,6 +86,10 @@ Required:
 - `from` (String) Start of the range, as `HH:MM:SS` (24 hours), e.g. `07:00:00`. The schedule is on from here.
 - `to` (String) End of the range, as `HH:MM:SS` (24 hours), later than `from`, e.g. `22:00:00`. Use `24:00:00` for the end of the day. The schedule is off from here.
 
+Optional:
+
+- `data` (String) Custom values of the range, as JSON text, e.g. `jsonencode({ price = 0.12, peak = true })`. It must be an object whose values are strings, numbers or booleans. Home Assistant shows them as attributes of the entity while the range is active. Unset, the range has none. The order of keys and the spelling of numbers do not matter.
+
 
 <a id="nestedatt--sunday"></a>
 ### Nested Schema for `sunday`
@@ -86,6 +98,10 @@ Required:
 
 - `from` (String) Start of the range, as `HH:MM:SS` (24 hours), e.g. `07:00:00`. The schedule is on from here.
 - `to` (String) End of the range, as `HH:MM:SS` (24 hours), later than `from`, e.g. `22:00:00`. Use `24:00:00` for the end of the day. The schedule is off from here.
+
+Optional:
+
+- `data` (String) Custom values of the range, as JSON text, e.g. `jsonencode({ price = 0.12, peak = true })`. It must be an object whose values are strings, numbers or booleans. Home Assistant shows them as attributes of the entity while the range is active. Unset, the range has none. The order of keys and the spelling of numbers do not matter.
 
 
 <a id="nestedatt--thursday"></a>
@@ -96,6 +112,10 @@ Required:
 - `from` (String) Start of the range, as `HH:MM:SS` (24 hours), e.g. `07:00:00`. The schedule is on from here.
 - `to` (String) End of the range, as `HH:MM:SS` (24 hours), later than `from`, e.g. `22:00:00`. Use `24:00:00` for the end of the day. The schedule is off from here.
 
+Optional:
+
+- `data` (String) Custom values of the range, as JSON text, e.g. `jsonencode({ price = 0.12, peak = true })`. It must be an object whose values are strings, numbers or booleans. Home Assistant shows them as attributes of the entity while the range is active. Unset, the range has none. The order of keys and the spelling of numbers do not matter.
+
 
 <a id="nestedatt--tuesday"></a>
 ### Nested Schema for `tuesday`
@@ -105,6 +125,10 @@ Required:
 - `from` (String) Start of the range, as `HH:MM:SS` (24 hours), e.g. `07:00:00`. The schedule is on from here.
 - `to` (String) End of the range, as `HH:MM:SS` (24 hours), later than `from`, e.g. `22:00:00`. Use `24:00:00` for the end of the day. The schedule is off from here.
 
+Optional:
+
+- `data` (String) Custom values of the range, as JSON text, e.g. `jsonencode({ price = 0.12, peak = true })`. It must be an object whose values are strings, numbers or booleans. Home Assistant shows them as attributes of the entity while the range is active. Unset, the range has none. The order of keys and the spelling of numbers do not matter.
+
 
 <a id="nestedatt--wednesday"></a>
 ### Nested Schema for `wednesday`
@@ -113,6 +137,10 @@ Required:
 
 - `from` (String) Start of the range, as `HH:MM:SS` (24 hours), e.g. `07:00:00`. The schedule is on from here.
 - `to` (String) End of the range, as `HH:MM:SS` (24 hours), later than `from`, e.g. `22:00:00`. Use `24:00:00` for the end of the day. The schedule is off from here.
+
+Optional:
+
+- `data` (String) Custom values of the range, as JSON text, e.g. `jsonencode({ price = 0.12, peak = true })`. It must be an object whose values are strings, numbers or booleans. Home Assistant shows them as attributes of the entity while the range is active. Unset, the range has none. The order of keys and the spelling of numbers do not matter.
 
 ## Import
 

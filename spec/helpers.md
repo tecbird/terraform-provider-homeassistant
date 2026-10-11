@@ -58,6 +58,11 @@ the end of the day. HA stores the ranges of a day sorted by start, so the plan-t
 order; another order would read back differently and show as drift. The check mirrors HA's others:
 `from` < `to`, and a range must not start before the previous one ends (ranges that meet are fine).
 
-A range in HA can carry a `data` object (custom values that show up in the entity's attributes while
-the range is active). The provider does not model it: it ignores `data` on read, and an update
-sends none, which clears it.
+A range in HA can carry a `data` object: custom values (strings, numbers, booleans) that show up in
+the entity's attributes while the range is active. It is an optional string attribute holding JSON,
+written with `jsonencode(...)`, so an update sends it and never clears what HA has. HA's own
+numbers keep their type (`1` stays an integer, `1.5` a float). The plan-time check requires a JSON
+object of strings, numbers and booleans, which is what HA accepts. The attribute uses the custom
+type `dyntype.JSONStringType`, which compares by semantic equality like dynamic config (ADR-0006):
+key order, whitespace and number spelling are not drift. It is a string rather than a dynamic
+attribute (ADR-0005) because the framework does not support dynamic attributes inside lists.
