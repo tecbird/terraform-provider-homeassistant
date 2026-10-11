@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/dynamicplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -22,6 +24,7 @@ import (
 var (
 	_ resource.ResourceWithConfigure   = (*integrationSubentryResource)(nil)
 	_ resource.ResourceWithImportState = (*integrationSubentryResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*integrationSubentryResource)(nil)
 )
 
 // NewIntegrationSubentry returns the `homeassistant_integration_subentry` resource.
@@ -34,34 +37,41 @@ type integrationSubentryResource struct {
 }
 
 type integrationSubentryModel struct {
-	ID             types.String  `tfsdk:"id"`
-	EntryID        types.String  `tfsdk:"entry_id"`
-	SubentryType   types.String  `tfsdk:"subentry_type"`
-	Steps          dyntype.Value `tfsdk:"steps"`
-	SensitiveSteps dyntype.Value `tfsdk:"sensitive_steps"`
-	SubentryID     types.String  `tfsdk:"subentry_id"`
-	Title          types.String  `tfsdk:"title"`
-	UniqueID       types.String  `tfsdk:"unique_id"`
+	ID                  types.String  `tfsdk:"id"`
+	EntryID             types.String  `tfsdk:"entry_id"`
+	SubentryType        types.String  `tfsdk:"subentry_type"`
+	Steps               dyntype.Value `tfsdk:"steps"`
+	SensitiveSteps      dyntype.Value `tfsdk:"sensitive_steps"`
+	SubentryID          types.String  `tfsdk:"subentry_id"`
+	Title               types.String  `tfsdk:"title"`
+	UniqueID            types.String  `tfsdk:"unique_id"`
+	SupportsReconfigure types.Bool    `tfsdk:"supports_reconfigure"`
 }
 
 // subentryIDSeparator separates the entry_id and the subentry_id in the resource ID.
 const subentryIDSeparator = "/"
+
+var supportsReconfigurePath = path.Root("supports_reconfigure")
 
 func (r *integrationSubentryResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_integration_subentry"
 }
 
 func (r *integrationSubentryResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	replaceUnlessImported := dynamicplanmodifier.RequiresReplaceIf(stepsChanged,
-		"Changing the steps replaces the subentry, except right after an import.",
-		"Changing the steps replaces the subentry, except right after an import.")
+	replaceUnlessReconfigurable := dynamicplanmodifier.RequiresReplaceIf(subentryStepsChanged,
+		"Changing the steps reconfigures the subentry if its type supports that, and replaces it "+
+			"otherwise; right after an import, the steps are only recorded.",
+		"Changing the steps reconfigures the subentry if its type supports that, and replaces it "+
+			"otherwise; right after an import, the steps are only recorded.")
 	resp.Schema = schema.Schema{
 		Description: "A subentry of a config entry, e.g. a plane of `forecast_solar` or a " +
 			"conversation agent of an AI integration, created by answering its subentry flow with " +
 			"the given steps. Home Assistant cannot return the data a subentry was created with, " +
-			"so the steps are never compared with Home Assistant: changing them replaces the " +
-			"subentry, and only a subentry that is gone is detected as drift. Flows that need a " +
-			"menu are not supported.",
+			"so the steps are never compared with Home Assistant, and only a subentry that is gone " +
+			"is detected as drift. Changing the steps runs the subentry's reconfigure flow, which " +
+			"keeps the subentry with its devices and entities, if its type has one " +
+			"(`supports_reconfigure`); otherwise it replaces the subentry. Flows that need a menu " +
+			"are not supported.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "`<entry_id>/<subentry_id>`. Import with this ID.",
@@ -88,12 +98,15 @@ func (r *integrationSubentryResource) Schema(_ context.Context, _ resource.Schem
 					"to the form's fields, e.g. `{ user = { declination = 30 } }`. They work as " +
 					"the `steps` of `homeassistant_integration` do. If Home Assistant asks for a " +
 					"step that is not given, or rejects the data, the flow is aborted and nothing " +
-					"is created. Changing the steps replaces the subentry, except right after an " +
-					"import, when they are only recorded.",
+					"is created. When the steps change and the type supports it, the reconfigure " +
+					"flow answers each of its forms from the steps by the form's fields: a field " +
+					"takes its value from the step with the form's `step_id`, else from any step " +
+					"that has it, and fields the form does not show are left out. Otherwise a " +
+					"change replaces the subentry. Right after an import the steps are only recorded.",
 				CustomType:    dyntype.Type{},
 				Required:      true,
 				Validators:    []validator.Dynamic{stepsValidator{}},
-				PlanModifiers: []planmodifier.Dynamic{replaceUnlessImported},
+				PlanModifiers: []planmodifier.Dynamic{replaceUnlessReconfigurable},
 			},
 			"sensitive_steps": schema.DynamicAttribute{
 				Description: "More fields, in the same shape as `steps`, that are hidden in plan " +
@@ -104,14 +117,79 @@ func (r *integrationSubentryResource) Schema(_ context.Context, _ resource.Schem
 				Optional:      true,
 				Sensitive:     true,
 				Validators:    []validator.Dynamic{stepsValidator{sensitive: true}},
-				PlanModifiers: []planmodifier.Dynamic{replaceUnlessImported},
+				PlanModifiers: []planmodifier.Dynamic{replaceUnlessReconfigurable},
 			},
 			"subentry_id": computedString("The subentry's `subentry_id`, assigned by Home Assistant."),
 			"title":       computedString("Title of the subentry, chosen by the integration's flow."),
 			"unique_id": computedString("The subentry's unique ID within its config entry, if the " +
 				"integration sets one; otherwise null."),
+			"supports_reconfigure": schema.BoolAttribute{
+				Description: "Whether subentries of this type have a reconfigure flow, as Home " +
+					"Assistant reports it. If so, changed steps reconfigure the subentry in place; " +
+					"if not, they replace it.",
+				Computed:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
 		},
 	}
+}
+
+// subentryStepsChanged requires replacement for changed steps, unless they are only recorded
+// after an import, or the subentry is reconfigured instead.
+func subentryStepsChanged(ctx context.Context, req planmodifier.DynamicRequest, resp *dynamicplanmodifier.RequiresReplaceIfFuncResponse) {
+	var prior dyntype.Value
+	var reconfigurable types.Bool
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, stepsPath, &prior)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, supportsReconfigurePath, &reconfigurable)...)
+	resp.RequiresReplace = !imported(prior) && !reconfigurable.ValueBool()
+}
+
+// imported reports whether the prior steps are null, which they are only after an import: the
+// steps cannot be read back, so the first ones written are recorded, not applied.
+func imported(priorSteps dyntype.Value) bool {
+	return priorSteps.IsNull() || priorSteps.IsUnderlyingValueNull()
+}
+
+// reconfigures reports whether updating state to plan runs the reconfigure flow: the steps change,
+// they are not only being recorded after an import, and the type has a reconfigure flow.
+func reconfigures(state, plan integrationSubentryModel) bool {
+	if imported(state.Steps) || !state.SupportsReconfigure.ValueBool() {
+		return false
+	}
+	return !stepsEqual(state.Steps, plan.Steps) || !stepsEqual(state.SensitiveSteps, plan.SensitiveSteps)
+}
+
+// stepsEqual reports whether two step objects hold the same steps. A value that is not known yet
+// counts as different; null and an empty object count as equal.
+func stepsEqual(a, b dyntype.Value) bool {
+	if a.IsUnknown() || b.IsUnknown() || a.IsUnderlyingValueUnknown() || b.IsUnderlyingValueUnknown() {
+		return false
+	}
+	da, errA := decodeSteps(a)
+	db, errB := decodeSteps(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if len(da) == 0 && len(db) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(da, db)
+}
+
+// ModifyPlan marks the title and unique ID unknown when the update reconfigures the subentry,
+// because the reconfigure flow may change them.
+func (r *integrationSubentryResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	var state, plan integrationSubentryModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() || !reconfigures(state, plan) {
+		return
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("title"), types.StringUnknown())...)
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("unique_id"), types.StringUnknown())...)
 }
 
 func (r *integrationSubentryResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -143,12 +221,20 @@ func (r *integrationSubentryResource) Create(ctx context.Context, req resource.C
 		return
 	}
 
-	sub, err := r.subentries.Create(ctx, plan.EntryID.ValueString(), plan.SubentryType.ValueString(), steps)
+	entryID, subentryType := plan.EntryID.ValueString(), plan.SubentryType.ValueString()
+	sub, err := r.subentries.Create(ctx, entryID, subentryType, steps)
 	if err != nil {
 		resp.Diagnostics.AddError("Creating config subentry", subentryErrorDetail(err))
 		return
 	}
 	plan.set(sub)
+	plan.SupportsReconfigure = types.BoolNull()
+	if ok, err := r.subentries.SupportsReconfigure(ctx, entryID, subentryType); err == nil {
+		plan.SupportsReconfigure = types.BoolValue(ok)
+	} else {
+		// The subentry exists. The next refresh reads the flag; until then, changes replace it.
+		resp.Diagnostics.AddWarning("Reading whether the subentry can be reconfigured", client.ErrorDetail(err))
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
@@ -159,7 +245,8 @@ func (r *integrationSubentryResource) Read(ctx context.Context, req resource.Rea
 		return
 	}
 
-	sub, ok, err := r.subentries.Get(ctx, state.EntryID.ValueString(), state.SubentryID.ValueString())
+	entryID := state.EntryID.ValueString()
+	sub, ok, err := r.subentries.Get(ctx, entryID, state.SubentryID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Reading config subentry", client.ErrorDetail(err))
 		return
@@ -168,17 +255,43 @@ func (r *integrationSubentryResource) Read(ctx context.Context, req resource.Rea
 		resp.State.RemoveResource(ctx)
 		return
 	}
+	reconfigurable, err := r.subentries.SupportsReconfigure(ctx, entryID, sub.SubentryType)
+	if errors.Is(err, client.ErrNotFound) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Reading config subentry", client.ErrorDetail(err))
+		return
+	}
 	// The steps cannot be read back, so they stay as they are.
 	state.set(sub)
+	state.SupportsReconfigure = types.BoolValue(reconfigurable)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
-// Update only records the steps after an import: every other change replaces the subentry.
+// Update runs the reconfigure flow for changed steps, or only records them after an import. Types
+// without a reconfigure flow are replaced instead (subentryStepsChanged).
 func (r *integrationSubentryResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan integrationSubentryModel
+	var plan, state integrationSubentryModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	if reconfigures(state, plan) {
+		steps, diags := flowSteps(plan.Steps, plan.SensitiveSteps)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		sub, err := r.subentries.Reconfigure(ctx, state.EntryID.ValueString(), state.SubentryType.ValueString(),
+			state.SubentryID.ValueString(), steps)
+		if err != nil {
+			resp.Diagnostics.AddError("Reconfiguring config subentry", reconfigureErrorDetail(err))
+			return
+		}
+		plan.set(sub)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
@@ -214,7 +327,7 @@ func parseSubentryID(id string) (entryID, subentryID string, err error) {
 	return entryID, subentryID, nil
 }
 
-// subentryErrorDetail is client.ErrorDetail with hints that fit subentries.
+// subentryErrorDetail is client.ErrorDetail with hints that fit creating a subentry.
 func subentryErrorDetail(err error) string {
 	var aborted *client.FlowAbortedError
 	if errors.As(err, &aborted) && aborted.Reason == "already_configured" {
@@ -229,6 +342,19 @@ func subentryErrorDetail(err error) string {
 	}
 	if errors.Is(err, client.ErrNotFound) {
 		return err.Error() + "\n\nCheck `entry_id`: the config entry does not exist."
+	}
+	return client.ErrorDetail(err)
+}
+
+// reconfigureErrorDetail is client.ErrorDetail with hints that fit reconfiguring a subentry.
+func reconfigureErrorDetail(err error) string {
+	var ambiguous *client.FlowFieldAmbiguousError
+	if errors.As(err, &ambiguous) {
+		return err.Error() + "\n\nThe subentry was not changed. Add the field to a step named after " +
+			"the reconfigure form's `step_id`, so it is clear which value applies."
+	}
+	if errors.Is(err, client.ErrNotFound) {
+		return err.Error() + "\n\nThe subentry is gone. The next plan creates it again."
 	}
 	return client.ErrorDetail(err)
 }

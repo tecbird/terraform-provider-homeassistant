@@ -10,7 +10,9 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   2026.5.4 and 2026.10.0.
 - New resource `homeassistant_integration_subentry`: creates a config subentry, e.g. a
   `forecast_solar` plane or a conversation agent of an AI integration, by answering its subentry
-  flow with `steps`, like `homeassistant_integration`. Import by `<entry_id>/<subentry_id>` (#67).
+  flow with `steps`, like `homeassistant_integration`. Changed steps run the subentry's
+  reconfigure flow where its type has one, which keeps the subentry and its devices and entities;
+  other types are replaced. Import by `<entry_id>/<subentry_id>` (#67).
 
 ## 1.0.0
 

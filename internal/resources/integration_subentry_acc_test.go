@@ -18,7 +18,19 @@ import (
 // The tests use forecast_solar: its config flow and its `plane` subentry flow need no hardware and
 // do not contact the service, and they work the same in every release of the support window. The
 // config flow creates the entry with one plane. A second plane needs an API key in the entry's
-// options, so the tests add planes only while the entry has none.
+// options, so the tests add planes only while the entry has none. A plane has a reconfigure flow.
+
+// checkOnlyPlane checks that the entry has exactly one plane in HA, the one with the ID that id
+// returns, titled title.
+func checkOnlyPlane(t *testing.T, entryID string, id func() string, title string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		planes := solarPlanes(t, entryID)
+		if len(planes) != 1 || planes[0].SubentryID != id() || planes[0].Title != title {
+			t.Errorf("planes in HA = %+v, want only %s titled %q", planes, id(), title)
+		}
+		return nil
+	}
+}
 
 // configSubentries returns the config-subentry API of the shared instance.
 func configSubentries(t *testing.T) client.ConfigSubentries {
@@ -116,7 +128,7 @@ func TestAccIntegrationSubentry(t *testing.T) {
 				ImportStateCheck: func(states []*terraform.InstanceState) error {
 					want := map[string]string{
 						"id": entryID + "/" + autoPlane, "entry_id": entryID, "subentry_id": autoPlane,
-						"subentry_type": "plane", "title": "25° / 180° / 10000W",
+						"subentry_type": "plane", "title": "25° / 180° / 10000W", "supports_reconfigure": "true",
 					}
 					if len(states) != 1 {
 						t.Fatalf("imported %d states", len(states))
@@ -150,34 +162,34 @@ func TestAccIntegrationSubentry(t *testing.T) {
 				},
 			},
 			{
-				// Changed steps replace the plane. Deleting the old one first leaves the entry without
-				// a plane, so the new one needs no API key.
+				// A plane has a reconfigure flow: changed steps change it in place. Its reconfigure
+				// form has the step_id `reconfigure` and is answered from the fields of `user`.
 				Config: planeConfig(entryID, 30, 5000),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
-					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate)},
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+						plancheck.ExpectUnknownValue(addr, tfjsonpath.New("title")),
+					},
 				},
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr(addr, "subentry_type", "plane"),
+					resource.TestCheckResourceAttr(addr, "subentry_id", autoPlane),
+					resource.TestCheckResourceAttr(addr, "id", entryID+"/"+autoPlane),
 					resource.TestCheckResourceAttr(addr, "title", "30° / 180° / 5000W"),
 					resource.TestCheckNoResourceAttr(addr, "unique_id"),
-					func(s *terraform.State) error {
-						attrs := s.RootModule().Resources[addr].Primary.Attributes
-						planeID = attrs["subentry_id"]
-						if planeID == autoPlane || attrs["id"] != entryID+"/"+planeID {
-							t.Errorf("subentry_id = %q, id = %q; want a new plane", planeID, attrs["id"])
-						}
-						planes := solarPlanes(t, entryID)
-						if len(planes) != 1 || planes[0].SubentryID != planeID {
-							t.Errorf("planes in HA = %+v, want only %s", planes, planeID)
-						}
-						return nil
-					},
+					checkOnlyPlane(t, entryID, func() string { return autoPlane }, "30° / 180° / 5000W"),
 				),
 			},
 			{
-				// Deleted outside Tofu: the plane drops out of state and is created again.
+				Config: planeConfig(entryID, 30, 5000),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				// Deleted outside Tofu: the plane drops out of state and is created again. The entry
+				// has no plane then, so the new one needs no API key.
 				PreConfig: func() {
-					if err := configSubentries(t).Delete(context.Background(), entryID, planeID); err != nil {
+					if err := configSubentries(t).Delete(context.Background(), entryID, autoPlane); err != nil {
 						t.Fatal(err)
 					}
 				},
@@ -185,7 +197,32 @@ func TestAccIntegrationSubentry(t *testing.T) {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionCreate)},
 				},
-				Check: resource.TestCheckResourceAttr(addr, "title", "30° / 180° / 5000W"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "subentry_type", "plane"),
+					resource.TestCheckResourceAttr(addr, "title", "30° / 180° / 5000W"),
+					resource.TestCheckResourceAttr(addr, "supports_reconfigure", "true"),
+					func(s *terraform.State) error {
+						attrs := s.RootModule().Resources[addr].Primary.Attributes
+						planeID = attrs["subentry_id"]
+						if planeID == autoPlane || attrs["id"] != entryID+"/"+planeID {
+							t.Errorf("subentry_id = %q, id = %q; want a new plane", planeID, attrs["id"])
+						}
+						return nil
+					},
+					checkOnlyPlane(t, entryID, func() string { return planeID }, "30° / 180° / 5000W"),
+				),
+			},
+			{
+				// A created plane is reconfigured in place too.
+				Config: planeConfig(entryID, 35, 5000),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrPtr(addr, "subentry_id", &planeID),
+					resource.TestCheckResourceAttr(addr, "title", "35° / 180° / 5000W"),
+					checkOnlyPlane(t, entryID, func() string { return planeID }, "35° / 180° / 5000W"),
+				),
 			},
 		},
 	})
