@@ -18,6 +18,9 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities, `gosec` findings
   of medium severity or above, and fixable CRITICAL/HIGH Trivy findings fail the run; everything
   else goes to code scanning alerts.
+- `homeassistant_integration`: config flows that show a menu, e.g. the template and group
+  helpers. The menu's step answers with `next_step_id`, the chosen option:
+  `steps = { user = { next_step_id = "sensor" }, sensor = { ... } }` (#65).
 
 ## 1.0.0
 

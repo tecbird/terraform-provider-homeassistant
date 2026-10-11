@@ -23,3 +23,13 @@ variable "shelly_password" {
   type      = string
   sensitive = true
 }
+
+# A flow that starts with a menu: the menu's step names the chosen option in `next_step_id`, and
+# the option's form is a step of its own. This one creates a template sensor helper.
+resource "homeassistant_integration" "answer" {
+  domain = "template"
+  steps = {
+    user   = { next_step_id = "sensor" }
+    sensor = { name = "Answer", state = "{{ 42 }}" }
+  }
+}
