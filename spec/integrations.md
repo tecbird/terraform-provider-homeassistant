@@ -81,6 +81,76 @@ fields is answered by `{}`.
   records them in state; nothing is sent to HA. After that, changing them forces replacement as
   usual. (A null `steps` in state marks the import, since `steps` is required otherwise.)
 
+## `homeassistant_integration_subentry`
+
+A config subentry is part of a config entry that the integration lets the user add, change, and
+remove on its own: a plane of `forecast_solar`, a conversation agent of an AI integration, an MQTT
+device. It is created by a **subentry flow**, which works like a config flow. Its input data cannot
+be read back either.
+
+```hcl
+resource "homeassistant_integration_subentry" "kitchen_agent" {
+  entry_id      = homeassistant_integration.anthropic.id
+  subentry_type = "conversation"
+  steps = {
+    init = { name = "Kitchen assistant", recommended = true }
+  }
+}
+```
+
+| Argument | Type | |
+|---|---|---|
+| `entry_id` | string | required, forces replacement |
+| `subentry_type` | string | required, as the integration names it (`plane`, `conversation`, …); forces replacement |
+| `steps` | as for `homeassistant_integration` | required, at least one step; forces replacement |
+| `sensitive_steps` | as for `homeassistant_integration`, sensitive | optional; forces replacement |
+
+`steps` and `sensitive_steps` work exactly as for `homeassistant_integration` (ADR-0021).
+
+| Computed | |
+|---|---|
+| `id` | `<entry_id>/<subentry_id>` |
+| `subentry_id` | assigned by HA |
+| `title` | chosen by the integration's flow |
+| `unique_id` | the integration's unique ID of the subentry, or null |
+
+HA API (the same in 2026.5 and 2026.10):
+
+```
+WS   config_entries/subentries/list    {entry_id}               → [{subentry_id, subentry_type, title, unique_id}]
+                                                                   unknown entry → not_found
+WS   config_entries/subentries/delete  {entry_id, subentry_id}  unknown entry or subentry → not_found
+REST POST /api/config/config_entries/subentries/flow  {"handler": [entry_id, subentry_type]}
+                                                                   unknown subentry_type → 404
+REST POST|DELETE /api/config/config_entries/subentries/flow/<flow_id>
+```
+
+The config-flow driver answers the subentry flow with the steps. The flow ends with
+`create_entry`, whose result names neither the subentry nor its ID, or with `abort`.
+
+- **Create:** list the entry's subentries (an unknown entry fails here, before any flow), run the
+  subentry flow, and list them again. The new subentry is the one of `subentry_type` that was not
+  there before; if there are several, the one with the title from `create_entry`. Flows on the
+  same entry run one at a time within the provider, so parallel creates cannot mistake each
+  other's subentries. An `abort` is an error with HA's reason, as for config flows.
+- **Read:** `config_entries/subentries/list`, matched on `subentry_id`. If the subentry or its
+  config entry is gone → remove from state. Inputs are never compared.
+- **Delete:** `config_entries/subentries/delete`. A subentry or entry that is already gone is not an
+  error. HA removes the subentry's devices and entities with it.
+- **Import:** by `<entry_id>/<subentry_id>`. As for `homeassistant_integration`, the steps are null
+  after import, and the next plan only records them.
+- **Update:** none. Subentry flows also have a reconfigure source (`"subentry_id"` in the start
+  request), which only some subentry types implement; the resource does not use it, and changed
+  steps replace the subentry, as for `homeassistant_integration` (ADR-0014).
+
+Errors: an unknown `entry_id` or `subentry_type` gets a hint naming the attribute. The abort
+`already_configured` (a subentry with the same `unique_id`) suggests importing with
+`<entry_id>/<subentry_id>`.
+
+**Testing.** Unit tests against fakes; acceptance test with `forecast_solar`, whose config flow
+creates the entry with one plane. A second plane needs an API key in the entry's options, so the
+test checks that abort, imports the first plane, and replaces it.
+
 ## `data.homeassistant_integration`
 
 Arguments: `domain` (required) and `title` (optional). It must match exactly one entry; no match
