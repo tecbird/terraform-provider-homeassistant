@@ -24,7 +24,8 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   reconfigure flow where its type has one, which keeps the subentry and its devices and entities;
   other types are replaced. Import by `<entry_id>/<subentry_id>` (#67). `steps` is optional, so
   `tofu plan -generate-config-out` after an import writes a configuration that plans without
-  errors (`steps = null`); only creating or replacing a subentry needs them.
+  errors (`steps = null`); only creating or replacing a subentry needs `steps` or
+  `sensitive_steps`.
 
 ## 1.0.0
 
