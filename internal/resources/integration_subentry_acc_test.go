@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
@@ -223,6 +225,99 @@ func TestAccIntegrationSubentry(t *testing.T) {
 					resource.TestCheckResourceAttr(addr, "title", "35° / 180° / 5000W"),
 					checkOnlyPlane(t, entryID, func() string { return planeID }, "35° / 180° / 5000W"),
 				),
+			},
+		},
+	})
+}
+
+func TestAccIntegrationSubentry_GenerateConfig(t *testing.T) {
+	acctest.SharedInstance(t)
+	const addr = "homeassistant_integration_subentry.generated"
+	entryID, planeID := solarEntry(t)
+	const title = "25° / 180° / 10000W"
+	// What `tofu plan -generate-config-out` writes after the import.
+	generated := acctest.ProviderConfig + fmt.Sprintf(`
+resource "homeassistant_integration_subentry" "generated" {
+  entry_id        = %q
+  sensitive_steps = null # sensitive
+  steps           = null
+  subentry_type   = "plane"
+}
+`, entryID)
+	importBlock := fmt.Sprintf(`
+import {
+  to = %s
+  id = "%s/%s"
+}
+`, addr, entryID, planeID)
+	withSteps := strings.Replace(generated, "steps           = null",
+		"steps           = { user = { declination = 30, azimuth = 180, modules_power = 5000 } }", 1)
+	samePlane := resource.ComposeAggregateTestCheckFunc(
+		resource.TestCheckResourceAttr(addr, "subentry_id", planeID),
+		checkOnlyPlane(t, entryID, func() string { return planeID }, title),
+	)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy: func(*terraform.State) error {
+			if planes := solarPlanes(t, entryID); len(planes) != 0 {
+				t.Errorf("planes left after destroy: %+v", planes)
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				// `tofu plan -generate-config-out` with an import block: the generated configuration
+				// leaves the steps null, and plans the import without changes.
+				Config:          acctest.ProviderConfig,
+				ResourceName:    addr,
+				ImportState:     true,
+				ImportStateKind: resource.ImportBlockWithID,
+				ImportStateId:   entryID + "/" + planeID,
+				GenerateConfig:  true,
+				ImportPlanChecks: resource.ImportPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionNoop),
+						plancheck.ExpectKnownValue(addr, tfjsonpath.New("subentry_type"), knownvalue.StringExact("plane")),
+						plancheck.ExpectKnownValue(addr, tfjsonpath.New("steps"), knownvalue.Null()),
+					},
+				},
+			},
+			{
+				// Applying the import with the configuration as generated changes nothing.
+				Config: generated + importBlock,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionNoop)},
+				},
+				Check: samePlane,
+			},
+			{
+				Config: generated,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				// A replacement is a create, which needs the steps.
+				Config:      strings.Replace(generated, `"plane"`, `"other"`, 1),
+				ExpectError: regexp.MustCompile(`Missing steps`),
+			},
+			{
+				// Written later, the steps are only recorded: no reconfigure, the title stays.
+				Config: withSteps,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				Check: samePlane,
+			},
+			{
+				// Removed again, they are only forgotten: no reconfigure, no replacement.
+				Config: generated,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
+				},
+				Check: samePlane,
 			},
 		},
 	})

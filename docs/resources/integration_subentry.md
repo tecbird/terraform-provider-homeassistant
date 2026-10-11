@@ -47,12 +47,12 @@ variable "anthropic_api_key" {
 ### Required
 
 - `entry_id` (String) The `entry_id` of the config entry the subentry belongs to, e.g. `homeassistant_integration.solar.id`. Changing it replaces the subentry.
-- `steps` (Dynamic) The answers to the subentry flow's forms, as an object from `step_id` to the form's fields, e.g. `{ user = { declination = 30 } }`. They work as the `steps` of `homeassistant_integration` do. If Home Assistant asks for a step that is not given, or rejects the data, the flow is aborted and nothing is created. When the steps change and the type supports it, the reconfigure flow answers each of its forms from the steps by the form's fields: a field takes its value from the step with the form's `step_id`, else from any step that has it, and fields the form does not show are left out. Otherwise a change replaces the subentry. Right after an import the steps are only recorded.
 - `subentry_type` (String) The kind of subentry, as the integration names it, e.g. `plane` for `forecast_solar` or `conversation` for an AI integration. Changing it replaces the subentry.
 
 ### Optional
 
 - `sensitive_steps` (Dynamic, Sensitive) More fields, in the same shape as `steps`, that are hidden in plan output, e.g. `{ user = { api_key = var.api_key } }`. They are merged into the step of the same `step_id`; on a field in both, this one wins. They are still stored in the state.
+- `steps` (Dynamic) The answers to the subentry flow's forms, as an object from `step_id` to the form's fields, e.g. `{ user = { declination = 30 } }`. They work as the `steps` of `homeassistant_integration` do. If Home Assistant asks for a step that is not given, or rejects the data, the flow is aborted and nothing is created. When the steps change and the type supports it, the reconfigure flow answers each of its forms from the steps by the form's fields: a field takes its value from the step with the form's `step_id`, else from any step that has it, and fields the form does not show are left out. Otherwise a change replaces the subentry. Right after an import the steps are only recorded. Creating the subentry needs them. An imported subentry can do without them: they stay null until set, which is what `tofu plan -generate-config-out` writes, and removing them later only forgets them.
 
 ### Read-Only
 
@@ -71,7 +71,9 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 ```shell
 # Import a subentry by `<entry_id>/<subentry_id>`. The WebSocket command
 # `config_entries/subentries/list` with the entry_id lists the subentry_ids. The steps cannot be read
-# back: write them into the configuration afterwards, and the next apply records them without
+# back, so they stay null: with an import block, `tofu plan -generate-config-out=subentry.tf` writes
+# `steps = null`, which plans no changes. An imported subentry needs steps only to be replaced.
+# Write them into the configuration whenever you like, and the next apply records them without
 # touching the subentry.
 tofu import homeassistant_integration_subentry.kitchen_agent 01JABCDEF0123456789ABCDEFG/01JABCDEF0123456789ABCDEFH
 ```
