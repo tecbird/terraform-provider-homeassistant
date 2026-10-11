@@ -18,6 +18,10 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities, `gosec` findings
   of medium severity or above, and fixable CRITICAL/HIGH Trivy findings fail the run; everything
   else goes to code scanning alerts.
+- New resource `homeassistant_integration_options`: sets the options of a config entry through
+  its options flow, e.g. a threshold's limits or a utility meter's source sensor, for entries made
+  in the UI or by `homeassistant_integration`. Only the fields in `steps` are managed. Import
+  reads the current options, and changes made outside Tofu show up as drift (#64).
 
 ## 1.0.0
 

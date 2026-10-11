@@ -47,6 +47,14 @@ type FormField struct {
 	Schema []FormField `json:"schema"`
 	// Default is absent (nil) if the field has no default.
 	Default json.RawMessage `json:"default"`
+	// Description holds the suggested value, which an options flow sets to the current option.
+	Description *FieldDescription `json:"description"`
+}
+
+// FieldDescription is the description of a form field.
+type FieldDescription struct {
+	// SuggestedValue is absent (nil) if the field has none.
+	SuggestedValue json.RawMessage `json:"suggested_value"`
 }
 
 // Has reports whether the form has a field with the given name, also inside a section.
