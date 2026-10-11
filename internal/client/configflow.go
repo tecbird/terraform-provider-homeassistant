@@ -154,7 +154,8 @@ func (e *FlowMenuChoiceError) Error() string {
 	case e.Choice == nil:
 		return fmt.Sprintf("%s, but the step has no %s; the options are %s", menu, MenuNextStep, quoteList(e.Options))
 	}
-	return fmt.Sprintf("%s, which has no option %q; the options are %s", menu, fmt.Sprint(e.Choice), quoteList(e.Options))
+	// The choice is not echoed: it may come from sensitive_steps.
+	return fmt.Sprintf("%s, but the step's %s is none of its options %s", menu, MenuNextStep, quoteList(e.Options))
 }
 
 // checkMenuChoice returns a FlowMenuChoiceError unless data answers the menu with one of its

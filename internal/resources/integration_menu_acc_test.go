@@ -110,7 +110,7 @@ resource "homeassistant_integration" "wrong_option" {
   }
 }
 `,
-				ExpectError: wrapped(`config flow for template showed the menu "user", which has no option "no_such_type"; the options are`),
+				ExpectError: wrapped(`config flow for template showed the menu "user", but the step's next_step_id is none of its options`),
 			},
 			{
 				// The menu's step without next_step_id.
