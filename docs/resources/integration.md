@@ -46,11 +46,11 @@ variable "shelly_password" {
 ### Required
 
 - `domain` (String) Integration domain, e.g. `shelly`. Changing it replaces the entry.
-- `steps` (Dynamic) The answers to the config flow's forms, as an object from `step_id` to the form's fields, e.g. `{ user = { host = "192.168.1.50" } }`. Each form Home Assistant shows is answered by the step with its `step_id`; a form without fields is answered by `{}`. If Home Assistant asks for a step that is not given, or rejects the data, the flow is aborted and nothing is created. Changing the steps replaces the entry, except right after an import, when they are only recorded.
 
 ### Optional
 
 - `sensitive_steps` (Dynamic, Sensitive) More fields, in the same shape as `steps`, that are hidden in plan output, e.g. `{ user = { password = var.password } }`. They are merged into the step of the same `step_id`; on a field in both, this one wins. They are still stored in the state.
+- `steps` (Dynamic) The answers to the config flow's forms, as an object from `step_id` to the form's fields, e.g. `{ user = { host = "192.168.1.50" } }`. Each form Home Assistant shows is answered by the step with its `step_id`; a form without fields is answered by `{}`. If Home Assistant asks for a step that is not given, or rejects the data, the flow is aborted and nothing is created. Changing the steps replaces the entry, except right after an import, when they are only recorded. Creating the entry needs a step, here or in `sensitive_steps`. An imported entry can do without them: they stay null until set, which is what `tofu plan -generate-config-out` writes, and removing both later only forgets them.
 
 ### Read-Only
 
@@ -66,7 +66,9 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Import a config entry by its entry_id. The steps cannot be read back: write them into the
-# configuration afterwards, and the next apply records them without touching the entry.
+# Import a config entry by its entry_id. The steps cannot be read back, so they stay null: with an
+# import block, `tofu plan -generate-config-out=integration.tf` writes `steps = null`, which plans
+# no changes. An imported entry needs steps only to be replaced. Write them into the configuration
+# whenever you like, and the next apply records them without touching the entry.
 tofu import homeassistant_integration.shelly 01JABCDEF0123456789ABCDEFG
 ```
