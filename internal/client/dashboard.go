@@ -89,11 +89,27 @@ func (d Dashboards) Delete(ctx context.Context, dashboardID string) error {
 	return d.ws.Command(ctx, "lovelace/dashboards/delete", map[string]any{"dashboard_id": dashboardID}, nil)
 }
 
-// Config returns the saved Lovelace config of the dashboard as JSON. It returns
-// ErrNoDashboardConfig if none was ever saved.
+// DefaultDashboardURLPath stands for the built-in default dashboard, which has no url_path. The
+// config commands then leave `url_path` out.
+const DefaultDashboardURLPath = ""
+
+// configParams returns the fields that select a dashboard in the `lovelace/config*` commands.
+func configParams(urlPath string) map[string]any {
+	params := map[string]any{}
+	if urlPath != DefaultDashboardURLPath {
+		params["url_path"] = urlPath
+	}
+	return params
+}
+
+// Config returns the saved Lovelace config of the dashboard as JSON, or of the default dashboard
+// for DefaultDashboardURLPath. It returns ErrNoDashboardConfig if none was ever saved, which for
+// the default dashboard means it is auto-generated.
 func (d Dashboards) Config(ctx context.Context, urlPath string) (json.RawMessage, error) {
+	params := configParams(urlPath)
+	params["force"] = true
 	var cfg json.RawMessage
-	err := d.ws.Command(ctx, "lovelace/config", map[string]any{"url_path": urlPath, "force": true}, &cfg)
+	err := d.ws.Command(ctx, "lovelace/config", params, &cfg)
 	var wsErr *WSError
 	if errors.As(err, &wsErr) && wsErr.Code == "config_not_found" {
 		return nil, ErrNoDashboardConfig
@@ -101,7 +117,17 @@ func (d Dashboards) Config(ctx context.Context, urlPath string) (json.RawMessage
 	return cfg, err
 }
 
-// SaveConfig replaces the Lovelace config of the dashboard. config is a JSON object.
+// SaveConfig replaces the Lovelace config of the dashboard (the default dashboard for
+// DefaultDashboardURLPath). config is a JSON object.
 func (d Dashboards) SaveConfig(ctx context.Context, urlPath string, config json.RawMessage) error {
-	return d.ws.Command(ctx, "lovelace/config/save", map[string]any{"url_path": urlPath, "config": config}, nil)
+	params := configParams(urlPath)
+	params["config"] = config
+	return d.ws.Command(ctx, "lovelace/config/save", params, nil)
+}
+
+// DeleteConfig deletes the saved Lovelace config of the dashboard, leaving the dashboard itself.
+// For the default dashboard (DefaultDashboardURLPath) it resets it to the auto-generated one.
+// Deleting a config that does not exist is not an error.
+func (d Dashboards) DeleteConfig(ctx context.Context, urlPath string) error {
+	return d.ws.Command(ctx, "lovelace/config/delete", configParams(urlPath), nil)
 }

@@ -8,6 +8,11 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 - Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
   2026.5.4 and 2026.10.0.
+- New resource `homeassistant_default_dashboard`: the config of the built-in default ("Overview")
+  dashboard, which has no `url_path` and so could not be managed or imported with
+  `homeassistant_dashboard`. Import ID `default`. Create fails if the dashboard already has a
+  saved config (import it instead); destroy deletes the saved config, so Home Assistant
+  generates the dashboard automatically again (#66).
 
 ## 1.0.0
 
