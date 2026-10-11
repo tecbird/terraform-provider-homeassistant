@@ -56,6 +56,9 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   an apply) could close the connection that other commands share, failing them with
   `ErrConnectionLost`; the cancel now ends only that command, and a command cancelled before
   it is sent is not sent.
+- New resource `homeassistant_integration_subentry`: creates a config subentry, e.g. a
+  `forecast_solar` plane or a conversation agent of an AI integration, by answering its subentry
+  flow with `steps`, like `homeassistant_integration`. Import by `<entry_id>/<subentry_id>` (#67).
 
 ## 1.0.0
 

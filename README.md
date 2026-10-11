@@ -17,7 +17,8 @@ scenes, helpers, dashboards, and integrations.
 - **Dashboards** (`homeassistant_dashboard`, and `homeassistant_default_dashboard` for the built-in
   default dashboard) and the **Energy dashboard preferences** (`homeassistant_energy_preferences`).
 - **Integrations:** any config entry by answering its config flow
-  (`homeassistant_integration`), plus typed resources for ESPHome and MQTT
+  (`homeassistant_integration`), and its subentries by answering their subentry flows
+  (`homeassistant_integration_subentry`), plus typed resources for ESPHome and MQTT
   (`homeassistant_esphome`, `homeassistant_mqtt`).
 - **Data sources** to look things up: entities, devices, areas, integrations, the instance config,
   and rendered templates.
