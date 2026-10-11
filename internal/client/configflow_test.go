@@ -354,22 +354,20 @@ func TestConfigFlowMenuOptionsAsObject(t *testing.T) {
 }
 
 func TestConfigFlowMenuChoiceErrors(t *testing.T) {
+	const noneOf = `config flow for template showed the menu "user", but the step's next_step_id is none of its options "binary_sensor", "sensor"`
 	for name, tc := range map[string]struct {
-		data map[string]any
-		want string
+		data      map[string]any
+		sensitive map[string]any
+		want      string
 	}{
 		"no choice": {
 			data: map[string]any{},
 			want: `config flow for template showed the menu "user", but the step has no next_step_id; the options are "binary_sensor", "sensor"`,
 		},
-		"not an option": {
-			data: map[string]any{"next_step_id": "light"},
-			want: `config flow for template showed the menu "user", which has no option "light"; the options are "binary_sensor", "sensor"`,
-		},
-		"not a string": {
-			data: map[string]any{"next_step_id": 1},
-			want: `which has no option "1"`,
-		},
+		"not an option": {data: map[string]any{"next_step_id": "light"}, want: noneOf},
+		"not a string":  {data: map[string]any{"next_step_id": 1}, want: noneOf},
+		// The choice is never echoed, because it may come from sensitive_steps.
+		"sensitive choice": {sensitive: map[string]any{"next_step_id": "hunter2"}, want: noneOf},
 		"fields of the next step": {
 			data: map[string]any{"next_step_id": "sensor", "state": "{{ 42 }}", "name": "Answer"},
 			want: `config flow for template showed the menu "user", which takes only next_step_id, but the step also has "name", "state"`,
@@ -378,11 +376,14 @@ func TestConfigFlowMenuChoiceErrors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := &fakeFlow{t: t, init: menuTemplate}
 
-			_, err := f.client().Run(t.Context(), "template", "", []FlowStep{{StepID: "user", Data: tc.data}})
+			_, err := f.client().Run(t.Context(), "template", "", []FlowStep{{StepID: "user", Data: tc.data, SensitiveData: tc.sensitive}})
 
 			var choice *FlowMenuChoiceError
 			if !errors.As(err, &choice) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v\nwant %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "hunter2") {
+				t.Errorf("message leaks the sensitive choice: %v", err)
 			}
 			if len(f.submitted) != 0 || !reflect.DeepEqual(f.deleted, []string{"f1"}) {
 				t.Errorf("submitted = %v, deleted = %v", f.submitted, f.deleted)
