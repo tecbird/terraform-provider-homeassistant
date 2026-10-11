@@ -60,7 +60,7 @@ data. It is not used for changing connection data.
 
 **Helper** — A user-defined stateful entity that automations can read and write:
 `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`,
-`input_button`.
+`input_button`, `counter`, `timer`, `schedule`.
 
 **Automation** — Triggers, conditions, and actions that HA runs on its own. It is identified by a
 config `id`, and its entity ID is derived from its alias — not from its id.

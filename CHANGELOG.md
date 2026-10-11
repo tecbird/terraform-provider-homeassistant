@@ -6,6 +6,12 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 ## Unreleased
 
+- New resources `homeassistant_counter`, `homeassistant_timer` and `homeassistant_schedule`, with
+  import and plan-time validation. They are typed like the `input_*` helpers. Weekdays of a
+  schedule are attributes (`monday` to `sunday`), each a list of `{ from, to }` time ranges. Times
+  and a timer's `duration` must be written the way Home Assistant stores them (`07:00:00`,
+  `0:05:00`). A time range's custom `data` is an optional JSON string (`data = jsonencode({ price = 0.12 })`),
+  compared by value, so key order and number spelling never show as a diff.
 - Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
   2026.5.4 and 2026.10.0.
 
