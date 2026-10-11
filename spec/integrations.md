@@ -55,7 +55,7 @@ resource "homeassistant_integration" "cloud" {
 | Argument | Type | |
 |---|---|---|
 | `domain` | string | required, forces replacement |
-| `steps` | object: `step_id` → object of fields (dynamic) | required, at least one step; forces replacement |
+| `steps` | object: `step_id` → object of fields (dynamic) | optional, but a create needs it; at least one step; forces replacement unless null before or after (see **Import**) |
 | `sensitive_steps` | same shape as `steps`, sensitive | optional; forces replacement |
 
 The steps are two dynamic objects keyed by `step_id` (ADR-0021, which supersedes ADR-0014's
@@ -71,15 +71,25 @@ fields is answered by `{}`.
 | `title`, `state`, `disabled_by` | from `config_entries/get` |
 
 - **Create:** run the config-flow driver, then read the new entry for the computed attributes.
+  A plan that creates the entry without `steps` fails with "Missing steps". OpenTofu plans a
+  replacement as a create too, so this catches a changed `domain` or `-replace` of an imported
+  entry before the old one is deleted.
 - **Read:** `config_entries/get` filtered by `domain`, matched on `entry_id`. If gone → remove
   from state. Inputs are never compared.
 - **Delete:** `DELETE /api/config/config_entries/entry/<id>`. An entry that is already gone is
   not an error. If HA answers `require_restart: true`, the delete succeeds with a warning that HA
   needs a restart to finish removing the integration.
 - **Import:** by `entry_id`, read across all domains. The steps cannot be recovered, so after
-  import they are null and the user writes them. The next plan is an in-place update that only
-  records them in state; nothing is sent to HA. After that, changing them forces replacement as
-  usual. (A null `steps` in state marks the import, since `steps` is required otherwise.)
+  import they are null. `tofu plan -generate-config-out` writes `steps = null`, and that plans no
+  changes: an imported entry needs no steps until it is replaced. When the user writes them, the
+  next plan is an in-place update that only records them in state; nothing is sent to HA. After
+  that, changing them forces replacement as usual, and removing them is an in-place update that
+  forgets them. Null `steps` in state mean the provider does not know the steps.
+  HA returns them nowhere (checked in 2026.5 and 2026.10): `config_entries/get` and `get_single`
+  return metadata only; diagnostics exist only for some integrations, in their own shape, with
+  secrets redacted; an options form shows the options, not the data; a reconfigure form exists
+  only for some integrations, not always under the `step_id` of the config flow, and MQTT's shows
+  a placeholder instead of the password.
 
 ## `data.homeassistant_integration`
 
