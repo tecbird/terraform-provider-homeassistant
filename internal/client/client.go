@@ -32,6 +32,7 @@ type HAClient struct {
 func New(cfg Config) *HAClient {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if cfg.Insecure {
+		// #nosec G402 -- opt-in via `insecure`
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opt-in via `insecure`
 	}
 	httpClient := &http.Client{Transport: transport, Timeout: cfg.Timeout}
