@@ -58,7 +58,8 @@ entry's data in place. Only some integrations implement it.
 **Config subentry** — A part of a config entry that can be added and removed on its own, e.g. a
 plane of `forecast_solar` or a conversation agent of an AI integration. It has a `subentry_type`
 and an HA-assigned `subentry_id`, and is created by a **subentry flow**, which works like a
-config flow. Like a config entry's, its input data cannot be read back.
+config flow. Like a config entry's, its input data cannot be read back. Some subentry types have
+a **subentry reconfigure flow**, which changes the data in place and keeps the `subentry_id`.
 
 **Options flow** — A separate flow that changes a config entry's *options*, as opposed to its
 data. It is not used for changing connection data.

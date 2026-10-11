@@ -58,8 +58,8 @@ Which operation uses which transport:
 | Config flows (create, reconfigure) | REST | `POST /api/config/config_entries/flow`, `POST/DELETE …/flow/<flow_id>` |
 | Delete config entry | REST | `DELETE /api/config/config_entries/entry/<entry_id>` |
 | Read config entries | WS | `config_entries/get` |
-| Subentry flows (create) | REST | `POST /api/config/config_entries/subentries/flow`, `POST/DELETE …/flow/<flow_id>` |
-| Read / delete config subentries | WS | `config_entries/subentries/list|delete` |
+| Subentry flows (create, reconfigure) | REST | `POST /api/config/config_entries/subentries/flow`, `POST/DELETE …/flow/<flow_id>` |
+| Read / delete config subentries | WS | `config_entries/subentries/list|delete`, `config_entries/get_single` (supported subentry types) |
 | Floor / area / label registry | WS | `config/<x>_registry/list|create|update|delete` |
 | Entity / device registry | WS | `config/entity_registry/get|update`, `config/device_registry/list|update` |
 | Input helpers | WS | `<domain>/list|create|update|delete` (id field `<domain>_id`) |
