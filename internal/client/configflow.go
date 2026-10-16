@@ -12,7 +12,8 @@ import (
 	"strings"
 )
 
-// FlowStep is the input for one form of a config flow, keyed by the form's step_id.
+// FlowStep is the input for one form of a config flow, keyed by the form's step_id. A flow that
+// shows a step_id several times takes several FlowSteps with that StepID, one per form, in order.
 type FlowStep struct {
 	StepID string
 	Data   map[string]any
@@ -218,27 +219,32 @@ func NewConfigFlows(rest *RESTClient) ConfigFlows {
 // Run starts a config flow for handler, answers each form with the step of the same step_id, and
 // returns the entry_id of the config entry.
 //
+// Several steps may share a step_id, for a flow that shows the same form more than once (e.g.
+// two forms with step_id "user"). They answer that step_id's forms in the order given. Steps of
+// different step_ids are matched by step_id, not by position.
+//
 // A non-empty entryID starts a reconfigure flow for that entry instead; it returns entryID once HA
 // aborts with ReasonReconfigureSuccessful.
 //
 // A missing step, form errors, or an unsupported result abort the flow (`DELETE`) before the error
-// is returned. Each step is submitted at most once, so a flow that asks for a step again fails
-// instead of looping.
+// is returned. Each step is submitted at most once, so a flow that shows a form more often than
+// there are steps for its step_id fails instead of looping.
 func (f ConfigFlows) Run(ctx context.Context, handler, entryID string, steps []FlowStep) (string, error) {
-	byID := make(map[string]FlowStep, len(steps))
+	byID := map[string][]FlowStep{}
 	for _, s := range steps {
-		byID[s.StepID] = s
+		byID[s.StepID] = append(byID[s.StepID], s)
 	}
-	submitted := map[string]bool{}
+	submitted := map[string]int{}
 	return f.RunAnswer(ctx, handler, entryID, func(_ context.Context, form FlowForm) (map[string]any, error) {
-		step, ok := byID[form.StepID]
-		if !ok || submitted[form.StepID] {
+		queue, ok := byID[form.StepID]
+		n := submitted[form.StepID]
+		if !ok || n >= len(queue) {
 			return nil, &FlowStepMissingError{
 				Flow: form.Flow, StepID: form.StepID, Provided: slices.Sorted(maps.Keys(byID)), Repeated: ok,
 			}
 		}
-		submitted[form.StepID] = true
-		return step.input(), nil
+		submitted[form.StepID] = n + 1
+		return queue[n].input(), nil
 	})
 }
 

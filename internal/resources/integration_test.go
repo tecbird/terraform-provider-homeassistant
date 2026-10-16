@@ -44,6 +44,56 @@ func TestFlowStepsMergesSensitiveSteps(t *testing.T) {
 	}
 }
 
+func TestFlowStepsListsAnswerRepeatedForms(t *testing.T) {
+	steps := mustDyn(t, `{"user": [{"backend_type": "ollama"}, {"host": "h", "port": 11434}], "confirm": {}}`)
+	sensitive := mustDyn(t, `{"user": [{}, {"api_key": "k"}]}`)
+
+	got, diags := flowSteps(steps, sensitive)
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	want := []client.FlowStep{
+		{StepID: "confirm", Data: map[string]any{}},
+		{StepID: "user", Data: map[string]any{"backend_type": "ollama"}, SensitiveData: map[string]any{}},
+		{StepID: "user", Data: map[string]any{"host": "h", "port": float64(11434)}, SensitiveData: map[string]any{"api_key": "k"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("flowSteps = %#v\nwant %#v", got, want)
+	}
+}
+
+func TestFlowStepsListOnlyInSensitiveSteps(t *testing.T) {
+	got, diags := flowSteps(mustDyn(t, `{"a": {}}`), mustDyn(t, `{"user": [{"x": 1}, {"y": 2}]}`))
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	if len(got) != 3 || got[1].StepID != "user" || got[2].StepID != "user" || got[2].SensitiveData["y"] != float64(2) {
+		t.Errorf("flowSteps = %#v", got)
+	}
+}
+
+func TestFlowStepsMismatchedFormCountIsAnError(t *testing.T) {
+	cases := map[string][2]string{
+		"list vs object":       {`{"user": [{}, {}]}`, `{"user": {"k": "hunter2"}}`},
+		"list vs shorter list": {`{"user": [{}, {}]}`, `{"user": [{"k": "hunter2"}]}`},
+		"empty list":           {`{"user": []}`, `null`},
+		"list of non-objects":  {`{"user": ["x"]}`, `null`},
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := flowSteps(mustDyn(t, in[0]), mustDyn(t, in[1]))
+			if !diags.HasError() {
+				t.Fatal("want an error")
+			}
+			for _, d := range diags {
+				if strings.Contains(d.Detail(), "hunter2") {
+					t.Errorf("diagnostic leaks the sensitive value: %s", d.Detail())
+				}
+			}
+		})
+	}
+}
+
 func TestStepsValidator(t *testing.T) {
 	cases := map[string]struct {
 		value     dyntype.Value
@@ -54,11 +104,15 @@ func TestStepsValidator(t *testing.T) {
 		"empty step":           {value: mustDyn(t, `{"user": {}}`)},
 		"null":                 {value: dyntype.NewNull()},
 		"unknown":              {value: dyntype.Value{DynamicValue: basetypes.NewDynamicUnknown()}},
+		"list of forms":        {value: mustDyn(t, `{"user": [{"a": 1}, {"b": 2}]}`)},
+		"empty list":           {value: mustDyn(t, `{"user": []}`), wantErr: `Step "user" must have at least one form`},
+		"list of non-objects":  {value: mustDyn(t, `{"user": [{"a": 1}, "x"]}`), wantErr: `Form 2 of step "user" must be an object of fields, got`},
+		"secret list non-obj":  {value: mustDyn(t, `{"user": ["hunter2"]}`), sensitive: true, wantErr: `Form 1 of step "user" must be an object of fields.`},
 		"no steps":             {value: mustDyn(t, `{}`), wantErr: "At least one step"},
 		"no sensitive steps":   {value: mustDyn(t, `{}`), sensitive: true},
 		"not an object":        {value: mustDyn(t, `["user"]`), wantErr: "Must be an object"},
-		"step not an object":   {value: mustDyn(t, `{"user": "h"}`), wantErr: `Step "user" must be an object of fields, got`},
-		"secret not an object": {value: mustDyn(t, `{"user": "hunter2"}`), sensitive: true, wantErr: `Step "user" must be an object of fields.`},
+		"step not an object":   {value: mustDyn(t, `{"user": "h"}`), wantErr: `Step "user" must be an object of fields or a list of such objects, got`},
+		"secret not an object": {value: mustDyn(t, `{"user": "hunter2"}`), sensitive: true, wantErr: `Step "user" must be an object of fields or a list of such objects.`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

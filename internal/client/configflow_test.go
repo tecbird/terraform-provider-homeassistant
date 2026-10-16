@@ -144,6 +144,66 @@ func TestConfigFlowMultipleStepsMergesSensitiveData(t *testing.T) {
 	}
 }
 
+func TestConfigFlowRepeatedStepAnsweredInOrder(t *testing.T) {
+	f := &fakeFlow{t: t, init: formUser, replies: []string{formUser, formCreds, createEntry}}
+
+	// Several FlowSteps with one step_id answer that form's visits in the order given.
+	id, err := f.client().Run(t.Context(), "shelly", "", []FlowStep{
+		{StepID: "user", Data: map[string]any{"backend_type": "ollama"}},
+		{StepID: "credentials", Data: map[string]any{"username": "admin"}},
+		{StepID: "user", Data: map[string]any{"host": "h"}, SensitiveData: map[string]any{"api_key": "k"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "E1" {
+		t.Errorf("entry_id = %q", id)
+	}
+	want := []map[string]any{
+		{"backend_type": "ollama"},
+		{"host": "h", "api_key": "k"},
+		{"username": "admin"},
+	}
+	if !reflect.DeepEqual(f.submitted, want) {
+		t.Errorf("submitted = %v, want %v", f.submitted, want)
+	}
+	if len(f.deleted) != 0 {
+		t.Errorf("deleted = %v", f.deleted)
+	}
+}
+
+func TestConfigFlowRepeatedStepWithoutSecondAnswerAborts(t *testing.T) {
+	f := &fakeFlow{t: t, init: formUser, replies: []string{formUser}}
+
+	_, err := f.client().Run(t.Context(), "shelly", "", []FlowStep{{StepID: "user"}})
+
+	var missing *FlowStepMissingError
+	if !errors.As(err, &missing) || missing.StepID != "user" || !missing.Repeated {
+		t.Fatalf("err = %v", err)
+	}
+	if len(f.submitted) != 1 || !reflect.DeepEqual(f.deleted, []string{"f1"}) {
+		t.Errorf("submitted = %v, deleted = %v", f.submitted, f.deleted)
+	}
+}
+
+func TestConfigFlowRepeatedStepListExhaustedAborts(t *testing.T) {
+	f := &fakeFlow{t: t, init: formUser, replies: []string{formUser, formUser}}
+
+	_, err := f.client().Run(t.Context(), "shelly", "", []FlowStep{
+		{StepID: "user", Data: map[string]any{"n": 1}},
+		{StepID: "user", Data: map[string]any{"n": 2}},
+	})
+
+	var missing *FlowStepMissingError
+	if !errors.As(err, &missing) || missing.StepID != "user" || !missing.Repeated {
+		t.Fatalf("err = %v", err)
+	}
+	want := []map[string]any{{"n": float64(1)}, {"n": float64(2)}}
+	if !reflect.DeepEqual(f.submitted, want) || !reflect.DeepEqual(f.deleted, []string{"f1"}) {
+		t.Errorf("submitted = %v, deleted = %v", f.submitted, f.deleted)
+	}
+}
+
 func TestConfigFlowUnexpectedStepAborts(t *testing.T) {
 	f := &fakeFlow{t: t, init: formUser, replies: []string{formCreds}}
 

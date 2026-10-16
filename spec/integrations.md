@@ -12,7 +12,7 @@ POST /api/config/config_entries/flow            {"handler": h, "show_advanced_op
 loop on result.type:
   "form"         → if result.errors is non-empty → abort + error with the errors
                    find the step with result.step_id (else abort + error);
-                   a step already submitted once → abort + error (no loops)
+                   a step already submitted once (all steps of its step_id used) → abort + error (no loops)
                    POST /api/config/config_entries/flow/<flow_id>   step.data ∪ step.sensitive_data
                    (on a HTTP error, e.g. 400 for data not matching the schema → abort + error)
   "create_entry" → return result.result.entry_id
@@ -23,7 +23,9 @@ loop on result.type:
 
 "abort" in the right-hand column means `DELETE /api/config/config_entries/flow/<flow_id>`. It is
 sent even if the context was cancelled. Steps are matched by `step_id`, not by position. On a key
-present in both maps, `sensitive_data` wins.
+present in both maps, `sensitive_data` wins. Several steps may share a `step_id`: they answer that
+`step_id`'s forms in the order given, and a form shown more often than there are steps for its
+`step_id` is the "already submitted" error above.
 
 The loop only asks the caller for the data of each form. `homeassistant_integration` answers by
 `step_id` as above; the typed integrations answer from field values (see *Answering forms from
@@ -55,12 +57,16 @@ resource "homeassistant_integration" "cloud" {
 | Argument | Type | |
 |---|---|---|
 | `domain` | string | required, forces replacement |
-| `steps` | object: `step_id` → object of fields (dynamic) | required, at least one step; forces replacement |
+| `steps` | object: `step_id` → object of fields, or list of such objects (dynamic) | required, at least one step; forces replacement |
 | `sensitive_steps` | same shape as `steps`, sensitive | optional; forces replacement |
 
 The steps are two dynamic objects keyed by `step_id` (ADR-0021, which supersedes ADR-0014's
 `step` blocks). The driver matches steps by `step_id`, so order carries no meaning, and a
-`step_id` cannot appear twice. A step's driver input is `steps[id]` as `data` and
+`step_id` cannot appear twice as a key. A flow that shows one `step_id` several times is answered
+by a list of objects as the value of that key: entry *n* answers the *n*th form of that `step_id`.
+An object is a list with one entry, so a second showing of the form is an error. If `steps[id]` and
+`sensitive_steps[id]` are both given, they must have the same number of forms (use `{}` for a form
+without secrets); each pair is merged as above. A step's driver input is `steps[id]` as `data` and
 `sensitive_steps[id]` as `sensitive_data`. A step may appear in either object or in both; the two
 are merged per step, and on a field present in both, `sensitive_steps` wins. A form without
 fields is answered by `{}`.

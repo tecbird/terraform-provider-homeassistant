@@ -6,6 +6,10 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 ## Unreleased
 
+- `homeassistant_integration`: a `step_id` in `steps` and `sensitive_steps` may be a list of
+  objects, whose entries answer the forms of a config flow that shows the same `step_id` more than
+  once, in order (e.g. home-llm's `llama_conversation`, whose two forms are both `user`). An object
+  stays valid and answers one form (#69).
 - Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
   2026.5.4 and 2026.10.0.
 

@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -66,7 +67,11 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			Description: "The answers to the config flow's forms, as an object from `step_id` to " +
 				"the form's fields, e.g. `{ user = { host = \"192.168.1.50\" } }`. Each form Home " +
 				"Assistant shows is answered by the step with its `step_id`; a form without fields " +
-				"is answered by `{}`. If Home Assistant asks for a step that is not given, or " +
+				"is answered by `{}`. A flow that shows the same `step_id` more than once is answered by " +
+				"a list of objects for that `step_id`, e.g. `{ user = [{ backend_type = \"ollama\" }, " +
+				"{ host = \"localhost\" }] }`: the entries answer its forms in order. An object is " +
+				"a single answer, so a second showing of that form is an error. If Home Assistant " +
+				"asks for a step that is not given, shows a form more often than it has answers, or " +
 				"rejects the data, the flow is aborted and nothing is created. Changing the steps " +
 				"replaces the entry, except right after an import, when they are only recorded.",
 			CustomType:    dyntype.Type{},
@@ -77,8 +82,9 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 		"sensitive_steps": schema.DynamicAttribute{
 			Description: "More fields, in the same shape as `steps`, that are hidden in plan " +
 				"output, e.g. `{ user = { password = var.password } }`. They are merged into the " +
-				"step of the same `step_id`; on a field in both, this one wins. They are still " +
-				"stored in the state.",
+				"step of the same `step_id`; on a field in both, this one wins. A `step_id` given as a " +
+				"list in `steps` needs a list of the same length here, with `{}` for a form without " +
+				"secret fields. They are still stored in the state.",
 			CustomType:    dyntype.Type{},
 			Optional:      true,
 			Sensitive:     true,
@@ -113,7 +119,8 @@ func (r *integrationResource) Configure(_ context.Context, req resource.Configur
 	r.entries = client.NewConfigEntries(c.WS, c.REST)
 }
 
-// flowSteps merges `steps` and `sensitive_steps` into the steps of the config-flow driver.
+// flowSteps merges `steps` and `sensitive_steps` into the steps of the config-flow driver. A step
+// given as a list yields one driver step per form, in order, all with the step's step_id.
 func flowSteps(steps, sensitive dyntype.Value) ([]client.FlowStep, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	data, err := decodeSteps(steps)
@@ -124,7 +131,7 @@ func flowSteps(steps, sensitive dyntype.Value) ([]client.FlowStep, diag.Diagnost
 	if err != nil {
 		// Do not echo the value: it is sensitive.
 		diags.AddAttributeError(path.Root("sensitive_steps"), "Invalid steps",
-			"sensitive_steps must be an object of objects.")
+			"sensitive_steps must be an object from step_id to an object of fields or a list of such objects.")
 	}
 	ids := map[string]bool{}
 	for id := range data {
@@ -135,13 +142,32 @@ func flowSteps(steps, sensitive dyntype.Value) ([]client.FlowStep, diag.Diagnost
 	}
 	var out []client.FlowStep
 	for _, id := range slices.Sorted(maps.Keys(ids)) {
-		out = append(out, client.FlowStep{StepID: id, Data: data[id], SensitiveData: secret[id]})
+		d, hasData := data[id]
+		sec, hasSecret := secret[id]
+		if hasData && hasSecret && len(d) != len(sec) {
+			diags.AddAttributeError(stepsPath, "Invalid steps", fmt.Sprintf(
+				"Step %q has %d forms in steps but %d in sensitive_steps; give both the same number of forms, "+
+					"using `{}` for a form that has no secret fields.", id, len(d), len(sec)))
+			continue
+		}
+		for i := range max(len(d), len(sec)) {
+			step := client.FlowStep{StepID: id}
+			if hasData {
+				step.Data = d[i]
+			}
+			if hasSecret {
+				step.SensitiveData = sec[i]
+			}
+			out = append(out, step)
+		}
 	}
 	return out, diags
 }
 
-// decodeSteps decodes an object of objects; null decodes to nil.
-func decodeSteps(v dyntype.Value) (map[string]map[string]any, error) {
+// decodeSteps decodes an object from step_id to the fields of the form, or to a list of such
+// objects for a step_id that is shown several times; null decodes to nil. A step given as an
+// object decodes to a list with one entry.
+func decodeSteps(v dyntype.Value) (map[string][]map[string]any, error) {
 	if v.IsNull() || v.IsUnderlyingValueNull() {
 		return nil, nil
 	}
@@ -149,11 +175,30 @@ func decodeSteps(v dyntype.Value) (map[string]map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var m map[string]map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("must be an object from step_id to an object of fields: %w", err)
+	var byID map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &byID); err != nil {
+		return nil, fmt.Errorf("must be an object from step_id to an object of fields or a list of such objects: %w", err)
 	}
-	return m, nil
+	out := make(map[string][]map[string]any, len(byID))
+	for id, rawStep := range byID {
+		if bytes.HasPrefix(bytes.TrimSpace(rawStep), []byte("[")) {
+			var forms []map[string]any
+			if err := json.Unmarshal(rawStep, &forms); err != nil {
+				return nil, fmt.Errorf("step %q must be a list of objects of fields: %w", id, err)
+			}
+			if len(forms) == 0 {
+				return nil, fmt.Errorf("step %q must have at least one form", id)
+			}
+			out[id] = forms
+			continue
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(rawStep, &fields); err != nil {
+			return nil, fmt.Errorf("step %q must be an object of fields or a list of such objects: %w", id, err)
+		}
+		out[id] = []map[string]any{fields}
+	}
+	return out, nil
 }
 
 // setEntry copies what HA reports about the config entry into m.
@@ -255,13 +300,14 @@ func (r *integrationResource) ImportState(ctx context.Context, req resource.Impo
 }
 
 // stepsValidator checks at plan time that `steps` or `sensitive_steps` is an object whose
-// values are objects. `steps` must have at least one step.
+// values are objects, or lists of objects for a step that is shown several times. `steps` must
+// have at least one step.
 type stepsValidator struct{ sensitive bool }
 
 var _ validator.Dynamic = stepsValidator{}
 
 func (stepsValidator) Description(context.Context) string {
-	return "must be an object from step_id to an object of fields"
+	return "must be an object from step_id to an object of fields, or to a list of such objects"
 }
 
 func (v stepsValidator) MarkdownDescription(ctx context.Context) string {
@@ -284,20 +330,56 @@ func (v stepsValidator) ValidateDynamic(ctx context.Context, req validator.Dynam
 			"At least one step is required, e.g. `{ user = {} }`.")
 	}
 	for id, fields := range steps {
-		if dv, ok := fields.(basetypes.DynamicValue); ok {
-			fields = dv.UnderlyingValue()
-		}
+		fields = unwrapDynamic(fields)
 		if fields == nil || fields.IsNull() || fields.IsUnknown() {
 			continue
 		}
+		if forms, ok := listElements(fields); ok {
+			if len(forms) == 0 {
+				resp.Diagnostics.AddAttributeError(req.Path, "Invalid steps",
+					fmt.Sprintf("Step %q must have at least one form.", id))
+			}
+			for i, form := range forms {
+				form = unwrapDynamic(form)
+				if form == nil || form.IsNull() || form.IsUnknown() {
+					continue
+				}
+				if _, ok := objectElements(form); !ok {
+					detail := fmt.Sprintf("Form %d of step %q must be an object of fields, got %s.", i+1, id, form.Type(ctx))
+					if v.sensitive {
+						detail = fmt.Sprintf("Form %d of step %q must be an object of fields.", i+1, id)
+					}
+					resp.Diagnostics.AddAttributeError(req.Path, "Invalid steps", detail)
+				}
+			}
+			continue
+		}
 		if _, ok := objectElements(fields); !ok {
-			detail := fmt.Sprintf("Step %q must be an object of fields, got %s.", id, fields.Type(ctx))
+			detail := fmt.Sprintf("Step %q must be an object of fields or a list of such objects, got %s.", id, fields.Type(ctx))
 			if v.sensitive {
-				detail = fmt.Sprintf("Step %q must be an object of fields.", id)
+				detail = fmt.Sprintf("Step %q must be an object of fields or a list of such objects.", id)
 			}
 			resp.Diagnostics.AddAttributeError(req.Path, "Invalid steps", detail)
 		}
 	}
+}
+
+func unwrapDynamic(v attr.Value) attr.Value {
+	if dv, ok := v.(basetypes.DynamicValue); ok {
+		return dv.UnderlyingValue()
+	}
+	return v
+}
+
+// listElements returns the elements of a tuple or list.
+func listElements(v attr.Value) ([]attr.Value, bool) {
+	switch u := v.(type) {
+	case basetypes.TupleValue:
+		return u.Elements(), true
+	case basetypes.ListValue:
+		return u.Elements(), true
+	}
+	return nil, false
 }
 
 // objectElements returns the attributes of an object or the elements of a map.
