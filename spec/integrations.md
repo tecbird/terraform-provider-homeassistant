@@ -87,6 +87,127 @@ fields is answered by `{}`.
   records them in state; nothing is sent to HA. After that, changing them forces replacement as
   usual. (A null `steps` in state marks the import, since `steps` is required otherwise.)
 
+## `homeassistant_integration_subentry`
+
+A config subentry is part of a config entry that the integration lets the user add, change, and
+remove on its own: a plane of `forecast_solar`, a conversation agent of an AI integration, an MQTT
+device. It is created by a **subentry flow**, which works like a config flow. Its input data cannot
+be read back either.
+
+```hcl
+resource "homeassistant_integration_subentry" "kitchen_agent" {
+  entry_id      = homeassistant_integration.anthropic.id
+  subentry_type = "conversation"
+  steps = {
+    init = { name = "Kitchen assistant", recommended = true }
+  }
+}
+```
+
+| Argument | Type | |
+|---|---|---|
+| `entry_id` | string | required, forces replacement |
+| `subentry_type` | string | required, as the integration names it (`plane`, `conversation`, …); forces replacement |
+| `steps` | as for `homeassistant_integration` | optional, but a create needs it or `sensitive_steps`; at least one step; reconfigure, else forces replacement; neither while both are null before or after (see **Import**) |
+| `sensitive_steps` | as for `homeassistant_integration`, sensitive | optional; reconfigure, else forces replacement; neither while both are null before or after |
+
+On create, `steps` and `sensitive_steps` work exactly as for `homeassistant_integration`
+(ADR-0021). On reconfigure they answer by fields; see **Update**.
+
+| Computed | |
+|---|---|
+| `id` | `<entry_id>/<subentry_id>` |
+| `subentry_id` | assigned by HA |
+| `title` | chosen by the integration's flow; unknown in a plan that reconfigures |
+| `unique_id` | the integration's unique ID of the subentry, or null; unknown in a plan that reconfigures |
+| `supports_reconfigure` | whether the subentry type has a reconfigure flow, from `supported_subentry_types` |
+
+HA API (the same in 2026.5 and 2026.10):
+
+```
+WS   config_entries/subentries/list    {entry_id}               → [{subentry_id, subentry_type, title, unique_id}]
+                                                                   unknown entry → not_found
+WS   config_entries/subentries/delete  {entry_id, subentry_id}  unknown entry or subentry → not_found
+WS   config_entries/get_single         {entry_id}               → {config_entry: {…, supported_subentry_types:
+                                                                     {<type>: {supports_reconfigure: bool}}}}
+REST POST /api/config/config_entries/subentries/flow  {"handler": [entry_id, subentry_type]}
+                                                                   unknown subentry_type → 404
+REST POST /api/config/config_entries/subentries/flow  {"handler": [entry_id, subentry_type], "subentry_id": id}
+                                                                   starts the reconfigure flow
+REST POST|DELETE /api/config/config_entries/subentries/flow/<flow_id>
+```
+
+The config-flow driver answers the subentry flow with the steps. The flow ends with
+`create_entry`, whose result names neither the subentry nor its ID, or with `abort`. A reconfigure
+flow ends with the abort `reconfigure_successful`.
+
+- **Create:** list the entry's subentries (an unknown entry fails here, before any flow), run the
+  subentry flow, and list them again. The new subentry is the one of `subentry_type` that was not
+  there before; if there are several, the one with the title from `create_entry`. Flows on the
+  same entry run one at a time within the provider, so parallel creates cannot mistake each
+  other's subentries. An `abort` is an error with HA's reason, as for config flows.
+  The list after the flow is retried with backoff (0.25 s doubling to 4 s, six attempts, even
+  after Ctrl-C), because the subentry already exists. If it still fails, or no new subentry or
+  several match, the create fails without state: the `subentry_id` is unknown, so there is
+  nothing a refresh could find. The error says the subentry exists and must not be created
+  again, and names the `entry_id`, `subentry_type`, title, and any candidate `subentry_id`s for
+  `tofu import`.
+  Then `config_entries/get_single` reads `supports_reconfigure`; if that fails, the subentry is
+  kept with the flag null (a warning), and the next refresh reads it. A plan that creates the
+  subentry with neither `steps` nor `sensitive_steps` fails with "Missing steps"; OpenTofu plans
+  a replacement as a create too, so a changed `entry_id` or `subentry_type` of an imported
+  subentry fails before it is deleted.
+- **Read:** `config_entries/subentries/list`, matched on `subentry_id`, and
+  `config_entries/get_single` for `supports_reconfigure`. If the subentry or its config entry is
+  gone → remove from state. Inputs are never compared.
+- **Delete:** `config_entries/subentries/delete`. A subentry or entry that is already gone is not an
+  error. HA removes the subentry's devices and entities with it.
+- **Import:** by `<entry_id>/<subentry_id>`. The steps are null after import: neither
+  `subentries/list` nor `get_single` returns a subentry's data, and the reconfigure form, which
+  pre-fills it, has its own `step_id` (`forecast_solar`: `reconfigure`, not `user`). So
+  `tofu plan -generate-config-out` writes `steps = null`, which plans no changes; an imported
+  subentry needs steps only to be replaced. Steps written later are only recorded, without a
+  reconfigure flow; removing them again only forgets them. `steps` and `sensitive_steps` both
+  null in state mean the provider does not know the steps; either one alone is enough to know
+  them (ADR-0021).
+- **Update:** changed `steps` or `sensitive_steps` run the subentry's **reconfigure flow** if
+  `supports_reconfigure` is true in state. It changes the subentry's data in place: the
+  `subentry_id`, and with it the subentry's devices and entities, stay. Types without a reconfigure
+  flow, or with the flag null, are replaced, as for `homeassistant_integration` (ADR-0014). The
+  plan marks `title` and `unique_id` unknown, because the flow may change them, and the update
+  reads them back afterwards. While both are null before or after, they are only recorded or
+  forgotten, as above.
+
+Reconfigure flows show the fields of the create flow, but not under the same `step_id`s
+(`forecast_solar`: `user`, then `reconfigure`), and not always all of them (an AI integration's
+`init` drops `name`). So the reconfigure flow answers each form by its fields, from the same steps:
+
+```
+ReconfigureAnswer(steps):
+  on every form:
+    a field takes its value from steps[form.step_id], else from any step that has it
+    a section takes its fields from the nested object under its name, else from the top level
+    fields the form does not have are left out; so are fields no step has (HA keeps their value)
+    a field that two other steps set to different values, and steps[form.step_id] lacks → abort + error
+    a required field without default that no step has → abort + error
+    the same step_id with the same fields as an earlier form → abort + error (no loops)
+```
+
+Any other abort reason, or a `create_entry`, is an error; HA then has not changed the subentry.
+
+Errors: an unknown `entry_id` or `subentry_type` gets a hint naming the attribute. The abort
+`already_configured` (a subentry with the same `unique_id`) suggests importing with
+`<entry_id>/<subentry_id>`.
+
+**Testing.** Unit tests against fakes; acceptance test with `forecast_solar`, whose config flow
+creates the entry with one plane. A second plane needs an API key in the entry's options, so the
+test checks that abort, imports the first plane, reconfigures it in place (same `subentry_id`, new
+title), deletes it outside Tofu so it is created again, and reconfigures the new one. A second
+test imports the plane with `-generate-config-out` and checks that the generated configuration
+plans no changes, that a replacement without steps fails, and that writing and removing the steps
+neither reconfigures nor replaces it. Replacement of a type without a reconfigure flow is
+unit-tested only.
+
 ## `data.homeassistant_integration`
 
 Arguments: `domain` (required) and `title` (optional). It must match exactly one entry; no match
@@ -125,7 +246,8 @@ Common to both:
 FieldAnswer(values, files):
   on every form:
     fields = form.data_schema; a field of type "expandable" (a section) has its own schema
-    answer  = each field present in values (a section → a nested object of its own fields)
+    answer  = each field present in values (a section → a nested object of its own fields,
+              looked up in values[section] if that is an object, else in values)
     a file field (selector "file") present in files → POST /api/file_upload, answer the file_id
     a required field without a default that values lacks → abort + error naming it
     the same step_id with the same fields as an earlier form → abort + error (no loops)

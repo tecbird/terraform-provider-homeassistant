@@ -109,6 +109,7 @@ func (p *HomeAssistantProvider) Resources(_ context.Context) []func() resource.R
 		resources.NewInputSelect,
 		resources.NewInputText,
 		resources.NewIntegration,
+		resources.NewIntegrationSubentry,
 		resources.NewLabel,
 		resources.NewMQTT,
 		resources.NewScene,
