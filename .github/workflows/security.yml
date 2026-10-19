@@ -2,7 +2,8 @@ name: Security
 
 # Security scanning: known vulnerabilities in dependencies and the standard library, static security
 # analysis of the code, and committed secrets. Findings go to the repository's code scanning alerts
-# (Security tab); a reachable known vulnerability or a fixable CRITICAL/HIGH finding fails the run.
+# (Security tab). A reachable known vulnerability, any gosec finding of medium severity or above, or
+# a fixable CRITICAL/HIGH Trivy finding fails the run.
 # Third-party actions are pinned to a commit SHA (tag in the comment) against tag hijacking.
 
 on:
@@ -48,8 +49,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: gosec
-        # Medium and above. Excluded: tests (_test.go, they talk to throwaway containers) and scripts/
-        # (developer-run code generators, not part of the provider binary).
+        # Medium and above; any finding fails the run, so justify intentional ones with
+        # `#nosec <rule> -- <reason>`. Excluded: tests (_test.go, they talk to throwaway containers)
+        # and scripts/ (developer-run code generators, not part of the provider binary).
         run: |
           go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 \
             -severity medium -confidence medium -exclude-generated -tests=false -exclude-dir=scripts \

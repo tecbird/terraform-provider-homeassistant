@@ -15,8 +15,9 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   the Go 1.26.0 standard library: HTTP/2 memory and CPU exhaustion and crashes in the plugin's
   gRPC server, `crypto/tls`, `net/url`) and none after.
 - CI: a `Security` workflow runs `govulncheck`, `gosec`, CodeQL and Trivy (dependency CVEs and
-  committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities and fixable
-  CRITICAL/HIGH findings fail the run; everything else goes to code scanning alerts.
+  committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities, `gosec` findings
+  of medium severity or above, and fixable CRITICAL/HIGH Trivy findings fail the run; everything
+  else goes to code scanning alerts.
 
 ## 1.0.0
 
