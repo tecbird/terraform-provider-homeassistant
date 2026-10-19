@@ -16,7 +16,8 @@ scenes, helpers, dashboards, and integrations.
   and `input_button`, validated at plan time.
 - **Dashboards** (`homeassistant_dashboard`).
 - **Integrations:** any config entry by answering its config flow
-  (`homeassistant_integration`), plus typed resources for ESPHome and MQTT
+  (`homeassistant_integration`), and its subentries by answering their subentry flows
+  (`homeassistant_integration_subentry`), plus typed resources for ESPHome and MQTT
   (`homeassistant_esphome`, `homeassistant_mqtt`).
 - **Data sources** to look things up: entities, devices, areas, integrations, the instance config,
   and rendered templates.

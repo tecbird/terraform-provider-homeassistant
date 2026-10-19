@@ -148,6 +148,8 @@ type flowResult struct {
 	DataSchema []FormField       `json:"data_schema"`
 	Errors     map[string]string `json:"errors"`
 	Reason     string            `json:"reason"`
+	// Title is the title of what create_entry created.
+	Title string `json:"title"`
 	// Result is the config entry of a config flow's create_entry; an options flow has `true`.
 	Result json.RawMessage `json:"result"`
 }
@@ -225,12 +227,17 @@ func NewConfigFlows(rest *RESTClient) ConfigFlows {
 // is returned. Each step is submitted at most once, so a flow that asks for a step again fails
 // instead of looping.
 func (f ConfigFlows) Run(ctx context.Context, handler, entryID string, steps []FlowStep) (string, error) {
+	return f.RunAnswer(ctx, handler, entryID, stepAnswer(steps))
+}
+
+// stepAnswer answers each form with the step of the same step_id, and each step at most once.
+func stepAnswer(steps []FlowStep) FlowAnswer {
 	byID := make(map[string]FlowStep, len(steps))
 	for _, s := range steps {
 		byID[s.StepID] = s
 	}
 	submitted := map[string]bool{}
-	return f.RunAnswer(ctx, handler, entryID, func(_ context.Context, form FlowForm) (map[string]any, error) {
+	return func(_ context.Context, form FlowForm) (map[string]any, error) {
 		step, ok := byID[form.StepID]
 		if !ok || submitted[form.StepID] {
 			return nil, &FlowStepMissingError{
@@ -239,7 +246,7 @@ func (f ConfigFlows) Run(ctx context.Context, handler, entryID string, steps []F
 		}
 		submitted[form.StepID] = true
 		return step.input(), nil
-	})
+	}
 }
 
 // RunAnswer is Run with each form answered by answer instead of by a step.
@@ -324,7 +331,14 @@ func fillFields(ctx context.Context, rest *RESTClient, form FlowForm, fields []F
 	data := map[string]any{}
 	for _, f := range fields {
 		if f.Type == "expandable" {
-			section, err := fillFields(ctx, rest, form, f.Schema, values, files)
+			// A section's fields come from values, or from a nested object under the section's
+			// name, which wins: steps hold sections nested, in the shape a form is submitted in.
+			sectionValues := values
+			if nested, ok := values[f.Name].(map[string]any); ok {
+				sectionValues = maps.Clone(values)
+				maps.Copy(sectionValues, nested)
+			}
+			section, err := fillFields(ctx, rest, form, f.Schema, sectionValues, files)
 			if err != nil {
 				return nil, err
 			}

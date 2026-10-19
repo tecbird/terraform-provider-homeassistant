@@ -58,6 +58,8 @@ Which operation uses which transport:
 | Config flows (create, reconfigure) | REST | `POST /api/config/config_entries/flow`, `POST/DELETE …/flow/<flow_id>` |
 | Delete config entry | REST | `DELETE /api/config/config_entries/entry/<entry_id>` |
 | Read config entries | WS | `config_entries/get` |
+| Subentry flows (create, reconfigure) | REST | `POST /api/config/config_entries/subentries/flow`, `POST/DELETE …/flow/<flow_id>` |
+| Read / delete config subentries | WS | `config_entries/subentries/list|delete`, `config_entries/get_single` (supported subentry types) |
 | Floor / area / label registry | WS | `config/<x>_registry/list|create|update|delete` |
 | Entity / device registry | WS | `config/entity_registry/get|update`, `config/device_registry/list|update` |
 | Input helpers | WS | `<domain>/list|create|update|delete` (id field `<domain>_id`) |
@@ -92,6 +94,7 @@ Which operation uses which transport:
 | `homeassistant_input_boolean`, `_number`, `_text`, `_select`, `_datetime`, `_button` | generated | [helpers.md](helpers.md) |
 | `homeassistant_dashboard` | `url_path` | [dashboards.md](dashboards.md) |
 | `homeassistant_integration` | `entry_id` | [integrations.md](integrations.md) |
+| `homeassistant_integration_subentry` | `<entry_id>/<subentry_id>` | [integrations.md](integrations.md) |
 | `homeassistant_esphome`, `homeassistant_mqtt` | `entry_id` | [integrations.md](integrations.md) |
 
 ### Functions (ADR-0007)

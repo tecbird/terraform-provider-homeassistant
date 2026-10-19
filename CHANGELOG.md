@@ -8,6 +8,24 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 - Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
   2026.5.4 and 2026.10.0.
+- Security: the provider binary is built with Go 1.26.9 (`toolchain` in `go.mod`) instead of
+  1.26.0, and `google.golang.org/grpc` (1.83.2), `golang.org/x/net` (0.60.0),
+  `golang.org/x/crypto` (0.57.0) and `github.com/moby/go-archive` (0.3.0, tests only) are
+  updated. `govulncheck` reported reachable vulnerabilities before (11 in modules, at least 10 in
+  the Go 1.26.0 standard library: HTTP/2 memory and CPU exhaustion and crashes in the plugin's
+  gRPC server, `crypto/tls`, `net/url`) and none after.
+- CI: a `Security` workflow runs `govulncheck`, `gosec`, CodeQL and Trivy (dependency CVEs and
+  committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities, `gosec` findings
+  of medium severity or above, and fixable CRITICAL/HIGH Trivy findings fail the run; everything
+  else goes to code scanning alerts.
+- New resource `homeassistant_integration_subentry`: creates a config subentry, e.g. a
+  `forecast_solar` plane or a conversation agent of an AI integration, by answering its subentry
+  flow with `steps`, like `homeassistant_integration`. Changed steps run the subentry's
+  reconfigure flow where its type has one, which keeps the subentry and its devices and entities;
+  other types are replaced. Import by `<entry_id>/<subentry_id>` (#67). `steps` is optional, so
+  `tofu plan -generate-config-out` after an import writes a configuration that plans without
+  errors (`steps = null`); only creating or replacing a subentry needs `steps` or
+  `sensitive_steps`.
 
 ## 1.0.0
 
