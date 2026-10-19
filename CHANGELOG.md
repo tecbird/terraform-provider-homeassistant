@@ -6,8 +6,24 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 ## Unreleased
 
+- New resources `homeassistant_counter`, `homeassistant_timer` and `homeassistant_schedule`, with
+  import and plan-time validation. They are typed like the `input_*` helpers. Weekdays of a
+  schedule are attributes (`monday` to `sunday`), each a list of `{ from, to }` time ranges. Times
+  and a timer's `duration` must be written the way Home Assistant stores them (`07:00:00`,
+  `0:05:00`). A time range's custom `data` is an optional JSON string (`data = jsonencode({ price = 0.12 })`),
+  compared by value, so key order and number spelling never show as a diff.
 - Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
   2026.5.4 and 2026.10.0.
+- Security: the provider binary is built with Go 1.26.9 (`toolchain` in `go.mod`) instead of
+  1.26.0, and `google.golang.org/grpc` (1.83.2), `golang.org/x/net` (0.60.0),
+  `golang.org/x/crypto` (0.57.0) and `github.com/moby/go-archive` (0.3.0, tests only) are
+  updated. `govulncheck` reported reachable vulnerabilities before (11 in modules, at least 10 in
+  the Go 1.26.0 standard library: HTTP/2 memory and CPU exhaustion and crashes in the plugin's
+  gRPC server, `crypto/tls`, `net/url`) and none after.
+- CI: a `Security` workflow runs `govulncheck`, `gosec`, CodeQL and Trivy (dependency CVEs and
+  committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities, `gosec` findings
+  of medium severity or above, and fixable CRITICAL/HIGH Trivy findings fail the run; everything
+  else goes to code scanning alerts.
 
 ## 1.0.0
 

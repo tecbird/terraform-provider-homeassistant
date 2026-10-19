@@ -12,8 +12,8 @@ scenes, helpers, dashboards, and integrations.
   managed field by field (`homeassistant_entity_settings`, `homeassistant_device_settings`).
 - **Automations, scripts and scenes** (`homeassistant_automation`, `homeassistant_script`,
   `homeassistant_scene`), taking their config as an object, e.g. from `yamldecode(file(...))`.
-- **Helpers:** `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`
-  and `input_button`, validated at plan time.
+- **Helpers:** `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`,
+  `input_button`, `counter`, `timer` and `schedule`, validated at plan time.
 - **Dashboards** (`homeassistant_dashboard`).
 - **Integrations:** any config entry by answering its config flow
   (`homeassistant_integration`), plus typed resources for ESPHome and MQTT

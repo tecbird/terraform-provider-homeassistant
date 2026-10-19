@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -15,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/toelke/terraform-provider-homeassistant/internal/client"
+	"github.com/toelke/terraform-provider-homeassistant/internal/dyntype"
 )
 
 // helperSpec describes one input helper domain (ADR-0013). Every helper shares the generic
@@ -124,30 +126,62 @@ func helperFields(m types.Object) (map[string]any, error) {
 		if name == "id" || name == "entity_id" || v.IsNull() || v.IsUnknown() {
 			continue
 		}
-		switch v := v.(type) {
-		case types.String:
-			fields[name] = v.ValueString()
-		case types.Bool:
-			fields[name] = v.ValueBool()
-		case types.Float64:
-			fields[name] = v.ValueFloat64()
-		case types.Int64:
-			fields[name] = v.ValueInt64()
-		case types.List:
-			items := make([]any, 0, len(v.Elements()))
-			for _, e := range v.Elements() {
-				s, ok := e.(types.String)
-				if !ok || s.IsNull() || s.IsUnknown() {
-					return nil, fmt.Errorf("attribute %q has an element %v that is not a known string. This is a bug in the provider", name, e)
-				}
-				items = append(items, s.ValueString())
-			}
-			fields[name] = items
-		default:
-			return nil, fmt.Errorf("attribute %q has the unsupported type %T. This is a bug in the provider", name, v)
+		f, err := haValue(v)
+		if err != nil {
+			return nil, fmt.Errorf("attribute %q: %w", name, err)
 		}
+		fields[name] = f
 	}
 	return fields, nil
+}
+
+// haValue converts a known, non-null attribute value into the JSON-like value HA stores. Null
+// attributes of an object are left out.
+func haValue(v attr.Value) (any, error) {
+	switch v := v.(type) {
+	case dyntype.JSONString:
+		// A JSON string is passed to HA as the JSON it holds.
+		return json.RawMessage(v.ValueString()), nil
+	case types.String:
+		return v.ValueString(), nil
+	case types.Bool:
+		return v.ValueBool(), nil
+	case types.Float64:
+		return v.ValueFloat64(), nil
+	case types.Int64:
+		return v.ValueInt64(), nil
+	case types.List:
+		items := make([]any, 0, len(v.Elements()))
+		for _, e := range v.Elements() {
+			if e.IsNull() || e.IsUnknown() {
+				return nil, fmt.Errorf("has an element %v that is not known. This is a bug in the provider", e)
+			}
+			item, err := haValue(e)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, item)
+		}
+		return items, nil
+	case types.Object:
+		obj := map[string]any{}
+		for name, e := range v.Attributes() {
+			if e.IsNull() {
+				continue
+			}
+			if e.IsUnknown() {
+				return nil, fmt.Errorf("has the unknown attribute %q. This is a bug in the provider", name)
+			}
+			f, err := haValue(e)
+			if err != nil {
+				return nil, fmt.Errorf("%q: %w", name, err)
+			}
+			obj[name] = f
+		}
+		return obj, nil
+	default:
+		return nil, fmt.Errorf("has the unsupported type %T. This is a bug in the provider", v)
+	}
 }
 
 // helperObject converts a helper as HA stores it into the resource object of type t. Fields HA
@@ -162,56 +196,87 @@ func (r *helperResource) helperObject(t types.ObjectType, h client.Helper) (type
 		case "entity_id":
 			raw, set = r.spec.domain+"."+h.HelperID(), true
 		}
-		switch {
-		case typ.Equal(types.StringType):
-			s, ok := raw.(string)
-			if !set || !ok {
-				vals[name] = types.StringNull()
-				continue
-			}
-			vals[name] = types.StringValue(s)
-		case typ.Equal(types.BoolType):
-			b, ok := raw.(bool)
-			if !set || !ok {
-				vals[name] = types.BoolNull()
-				continue
-			}
-			vals[name] = types.BoolValue(b)
-		case typ.Equal(types.Float64Type):
-			f, ok := raw.(float64)
-			if !set || !ok {
-				vals[name] = types.Float64Null()
-				continue
-			}
-			vals[name] = types.Float64Value(f)
-		case typ.Equal(types.Int64Type):
-			// JSON numbers decode to float64.
-			f, ok := raw.(float64)
-			if !set || !ok {
-				vals[name] = types.Int64Null()
-				continue
-			}
-			vals[name] = types.Int64Value(int64(f))
-		case typ.Equal(types.ListType{ElemType: types.StringType}):
-			items, ok := raw.([]any)
-			if !set || !ok {
-				vals[name] = types.ListNull(types.StringType)
-				continue
-			}
-			elems := make([]attr.Value, 0, len(items))
-			for _, item := range items {
-				s, _ := item.(string)
-				elems = append(elems, types.StringValue(s))
-			}
-			vals[name] = types.ListValueMust(types.StringType, elems)
-		default:
+		if !set {
+			raw = nil
+		}
+		v, err := attrValue(typ, raw)
+		if err != nil {
 			var diags diag.Diagnostics
-			diags.AddError("Reading helper", fmt.Sprintf(
-				"Attribute %q has the unsupported type %s. This is a bug in the provider.", name, typ))
+			diags.AddError("Reading helper", fmt.Sprintf("Attribute %q: %s. This is a bug in the provider.", name, err))
 			return types.ObjectNull(t.AttrTypes), diags
 		}
+		vals[name] = v
 	}
 	return types.ObjectValue(t.AttrTypes, vals)
+}
+
+// attrValue converts a JSON-decoded value from HA into an attribute value of type typ. A missing
+// value, or one of the wrong JSON type, is null.
+func attrValue(typ attr.Type, raw any) (attr.Value, error) {
+	if _, ok := typ.(dyntype.JSONStringType); ok {
+		if raw == nil {
+			return dyntype.NewJSONStringNull(), nil
+		}
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		return dyntype.NewJSONString(string(b)), nil
+	}
+	switch {
+	case typ.Equal(types.StringType):
+		if s, ok := raw.(string); ok {
+			return types.StringValue(s), nil
+		}
+		return types.StringNull(), nil
+	case typ.Equal(types.BoolType):
+		if b, ok := raw.(bool); ok {
+			return types.BoolValue(b), nil
+		}
+		return types.BoolNull(), nil
+	case typ.Equal(types.Float64Type):
+		if f, ok := raw.(float64); ok {
+			return types.Float64Value(f), nil
+		}
+		return types.Float64Null(), nil
+	case typ.Equal(types.Int64Type):
+		// JSON numbers decode to float64.
+		if f, ok := raw.(float64); ok {
+			return types.Int64Value(int64(f)), nil
+		}
+		return types.Int64Null(), nil
+	}
+	switch typ := typ.(type) {
+	case types.ListType:
+		items, ok := raw.([]any)
+		if !ok {
+			return types.ListNull(typ.ElemType), nil
+		}
+		elems := make([]attr.Value, 0, len(items))
+		for _, item := range items {
+			e, err := attrValue(typ.ElemType, item)
+			if err != nil {
+				return nil, err
+			}
+			elems = append(elems, e)
+		}
+		return types.ListValueMust(typ.ElemType, elems), nil
+	case types.ObjectType:
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			return types.ObjectNull(typ.AttrTypes), nil
+		}
+		vals := make(map[string]attr.Value, len(typ.AttrTypes))
+		for name, at := range typ.AttrTypes {
+			v, err := attrValue(at, obj[name])
+			if err != nil {
+				return nil, err
+			}
+			vals[name] = v
+		}
+		return types.ObjectValueMust(typ.AttrTypes, vals), nil
+	}
+	return nil, fmt.Errorf("has the unsupported type %s", typ)
 }
 
 func (r *helperResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
