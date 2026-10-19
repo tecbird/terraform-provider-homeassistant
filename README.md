@@ -14,7 +14,8 @@ scenes, helpers, dashboards, and integrations.
   `homeassistant_scene`), taking their config as an object, e.g. from `yamldecode(file(...))`.
 - **Helpers:** `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`
   and `input_button`, validated at plan time.
-- **Dashboards** (`homeassistant_dashboard`).
+- **Dashboards** (`homeassistant_dashboard`, and `homeassistant_default_dashboard` for the built-in
+  default dashboard).
 - **Integrations:** any config entry by answering its config flow
   (`homeassistant_integration`), plus typed resources for ESPHome and MQTT
   (`homeassistant_esphome`, `homeassistant_mqtt`).
