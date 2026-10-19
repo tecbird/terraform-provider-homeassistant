@@ -1,0 +1,120 @@
+name: Security
+
+# Security scanning: known vulnerabilities in dependencies and the standard library, static security
+# analysis of the code, and committed secrets. Findings go to the repository's code scanning alerts
+# (Security tab). A reachable known vulnerability, any gosec finding of medium severity or above, or
+# a fixable CRITICAL/HIGH Trivy finding fails the run.
+# Third-party actions are pinned to a commit SHA (tag in the comment) against tag hijacking.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # New advisories appear without any change here: scan main weekly.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Known vulnerabilities (Go vulnerability database) in code paths the provider actually calls.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          repo-checkout: false
+          go-version-file: go.mod
+          go-package: ./...
+
+  # Static security analysis of the Go code (injection, weak crypto, unsafe file and HTTP use, ...).
+  gosec:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gosec
+        # Medium and above; any finding fails the run, so justify intentional ones with
+        # `#nosec <rule> -- <reason>`. Excluded: tests (_test.go, they talk to throwaway containers)
+        # and scripts/ (developer-run code generators, not part of the provider binary).
+        run: |
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 \
+            -severity medium -confidence medium -exclude-generated -tests=false -exclude-dir=scripts \
+            -fmt sarif -out gosec.sarif -stdout -verbose=text ./...
+      - if: always()
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+  # GitHub's semantic code analysis (CodeQL), security-extended query suite.
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: go
+          build-mode: autobuild
+          queries: security-extended
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: codeql-go
+
+  # Dependency CVEs and committed secrets. CRITICAL and HIGH with an available fix fail the run; unfixable
+  # ones are reported to code scanning only, otherwise the gate would stay red with nothing to do.
+  trivy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: report (all severities, to code scanning)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          format: sarif
+          output: trivy.sarif
+      - if: always()
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy.sarif
+          category: trivy
+      - name: gate (fixable CRITICAL/HIGH fail)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table

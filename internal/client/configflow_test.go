@@ -286,7 +286,7 @@ func TestConfigFlowReconfigureSuccessfulOnlyCountsForReconfigure(t *testing.T) {
 }
 
 func TestConfigFlowUnsupportedResultAborts(t *testing.T) {
-	for _, typ := range []string{"menu", "external", "show_progress", "progress_done"} {
+	for _, typ := range []string{"external", "show_progress", "progress_done"} {
 		t.Run(typ, func(t *testing.T) {
 			f := &fakeFlow{t: t, init: formUser, replies: []string{
 				`{"type":"` + typ + `","flow_id":"f1","step_id":"pick"}`,
@@ -296,6 +296,122 @@ func TestConfigFlowUnsupportedResultAborts(t *testing.T) {
 
 			var unsupported *FlowUnsupportedError
 			if !errors.As(err, &unsupported) || unsupported.Type != typ {
+				t.Fatalf("err = %v", err)
+			}
+			if !reflect.DeepEqual(f.deleted, []string{"f1"}) {
+				t.Errorf("deleted = %v", f.deleted)
+			}
+		})
+	}
+}
+
+// The template helper's flow starts with a menu, as HA serializes it: the options as a list, and a
+// data_schema with the one field next_step_id.
+const (
+	menuTemplate = `{"type":"menu","flow_id":"f1","handler":"template","step_id":"user",
+		"data_schema":[{"type":"select","options":[["binary_sensor","binary_sensor"],["sensor","sensor"]],"name":"next_step_id","optional":true}],
+		"menu_options":["binary_sensor","sensor"],"description_placeholders":null}`
+	formSensor = `{"type":"form","flow_id":"f1","handler":"template","step_id":"sensor","errors":null,
+		"data_schema":[{"name":"name","required":true},{"name":"state","required":true}]}`
+)
+
+func TestConfigFlowMenu(t *testing.T) {
+	f := &fakeFlow{t: t, init: menuTemplate, replies: []string{formSensor, createEntry}}
+
+	id, err := f.client().Run(t.Context(), "template", "", []FlowStep{
+		{StepID: "sensor", Data: map[string]any{"name": "Answer", "state": "{{ 42 }}"}},
+		{StepID: "user", Data: map[string]any{"next_step_id": "sensor"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "E1" {
+		t.Errorf("entry_id = %q", id)
+	}
+	want := []map[string]any{{"next_step_id": "sensor"}, {"name": "Answer", "state": "{{ 42 }}"}}
+	if !reflect.DeepEqual(f.submitted, want) {
+		t.Errorf("submitted = %v", f.submitted)
+	}
+	if len(f.deleted) != 0 {
+		t.Errorf("deleted = %v", f.deleted)
+	}
+}
+
+func TestConfigFlowMenuOptionsAsObject(t *testing.T) {
+	// Some integrations give the options as an object from step_id to label.
+	f := &fakeFlow{t: t, init: `{"type":"menu","flow_id":"f1","step_id":"user",
+		"menu_options":{"broker":"Broker","addon":"Add-on"}}`, replies: []string{createEntry}}
+
+	_, err := f.client().Run(t.Context(), "mqtt", "", []FlowStep{
+		{StepID: "user", SensitiveData: map[string]any{"next_step_id": "broker"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []map[string]any{{"next_step_id": "broker"}}; !reflect.DeepEqual(f.submitted, want) {
+		t.Errorf("submitted = %v", f.submitted)
+	}
+}
+
+func TestConfigFlowMenuChoiceErrors(t *testing.T) {
+	const noneOf = `config flow for template showed the menu "user", but the step's next_step_id is none of its options "binary_sensor", "sensor"`
+	for name, tc := range map[string]struct {
+		data      map[string]any
+		sensitive map[string]any
+		want      string
+	}{
+		"no choice": {
+			data: map[string]any{},
+			want: `config flow for template showed the menu "user", but the step has no next_step_id; the options are "binary_sensor", "sensor"`,
+		},
+		"not an option": {data: map[string]any{"next_step_id": "light"}, want: noneOf},
+		"not a string":  {data: map[string]any{"next_step_id": 1}, want: noneOf},
+		// The choice is never echoed, because it may come from sensitive_steps.
+		"sensitive choice": {sensitive: map[string]any{"next_step_id": "hunter2"}, want: noneOf},
+		"fields of the next step": {
+			data: map[string]any{"next_step_id": "sensor", "state": "{{ 42 }}", "name": "Answer"},
+			want: `config flow for template showed the menu "user", which takes only next_step_id, but the step also has "name", "state"`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeFlow{t: t, init: menuTemplate}
+
+			_, err := f.client().Run(t.Context(), "template", "", []FlowStep{{StepID: "user", Data: tc.data, SensitiveData: tc.sensitive}})
+
+			var choice *FlowMenuChoiceError
+			if !errors.As(err, &choice) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v\nwant %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "hunter2") {
+				t.Errorf("message leaks the sensitive choice: %v", err)
+			}
+			if len(f.submitted) != 0 || !reflect.DeepEqual(f.deleted, []string{"f1"}) {
+				t.Errorf("submitted = %v, deleted = %v", f.submitted, f.deleted)
+			}
+		})
+	}
+}
+
+func TestConfigFlowMenuMissingOrRepeated(t *testing.T) {
+	for name, tc := range map[string]struct {
+		replies  []string
+		steps    []FlowStep
+		repeated bool
+	}{
+		"menu not in steps": {steps: []FlowStep{{StepID: "sensor"}}},
+		"menu shown again": {
+			replies:  []string{menuTemplate},
+			steps:    []FlowStep{{StepID: "user", Data: map[string]any{"next_step_id": "sensor"}}},
+			repeated: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeFlow{t: t, init: menuTemplate, replies: tc.replies}
+
+			_, err := f.client().Run(t.Context(), "template", "", tc.steps)
+
+			var missing *FlowStepMissingError
+			if !errors.As(err, &missing) || missing.StepID != "user" || missing.Repeated != tc.repeated {
 				t.Fatalf("err = %v", err)
 			}
 			if !reflect.DeepEqual(f.deleted, []string{"f1"}) {
@@ -323,7 +439,7 @@ func TestConfigFlowAbortFailureIsReported(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		_, _ = w.Write([]byte(`{"type":"menu","flow_id":"f1","step_id":"pick"}`))
+		_, _ = w.Write([]byte(`{"type":"external","flow_id":"f1","step_id":"pick"}`))
 	}))
 
 	_, err := c.Run(t.Context(), "shelly", "", nil)
@@ -435,6 +551,23 @@ func TestFieldAnswerSameFormTwiceAborts(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	if len(f.submitted) != 1 || !reflect.DeepEqual(f.deleted, []string{"f1"}) {
+		t.Errorf("submitted = %v, deleted = %v", f.submitted, f.deleted)
+	}
+}
+
+// The typed integrations answer from field values, which cannot choose a menu option, e.g.
+// MQTT's add-on-or-broker menu under the Supervisor.
+func TestFieldAnswerMenuUnsupported(t *testing.T) {
+	f := &fakeFlow{t: t, init: `{"type":"menu","flow_id":"f1","step_id":"user","menu_options":["addon","broker"]}`}
+	rest := serve(t, f.handle)
+
+	_, err := NewConfigFlows(rest).RunAnswer(t.Context(), "mqtt", "", FieldAnswer(rest, map[string]any{"next_step_id": "broker"}, nil))
+
+	var unsupported *FlowUnsupportedError
+	if !errors.As(err, &unsupported) || unsupported.Type != "menu" || unsupported.StepID != "user" {
+		t.Fatalf("err = %v", err)
+	}
+	if len(f.submitted) != 0 || !reflect.DeepEqual(f.deleted, []string{"f1"}) {
 		t.Errorf("submitted = %v, deleted = %v", f.submitted, f.deleted)
 	}
 }
