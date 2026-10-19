@@ -26,6 +26,7 @@ import (
 var (
 	_ resource.ResourceWithConfigure   = (*integrationResource)(nil)
 	_ resource.ResourceWithImportState = (*integrationResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*integrationResource)(nil)
 )
 
 // NewIntegration returns the generic `homeassistant_integration` resource (ADR-0014).
@@ -45,7 +46,10 @@ type integrationModel struct {
 	SensitiveSteps dyntype.Value `tfsdk:"sensitive_steps"`
 }
 
-var stepsPath = path.Root("steps")
+var (
+	stepsPath          = path.Root("steps")
+	sensitiveStepsPath = path.Root("sensitive_steps")
+)
 
 func (r *integrationResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_integration"
@@ -68,9 +72,12 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				"Assistant shows is answered by the step with its `step_id`; a form without fields " +
 				"is answered by `{}`. If Home Assistant asks for a step that is not given, or " +
 				"rejects the data, the flow is aborted and nothing is created. Changing the steps " +
-				"replaces the entry, except right after an import, when they are only recorded.",
+				"replaces the entry, except right after an import, when they are only recorded. " +
+				"Creating the entry needs a step, here or in `sensitive_steps`. An imported entry " +
+				"can do without them: they stay null until set, which is what `tofu plan " +
+				"-generate-config-out` writes, and removing both later only forgets them.",
 			CustomType:    dyntype.Type{},
-			Required:      true,
+			Optional:      true,
 			Validators:    []validator.Dynamic{stepsValidator{}},
 			PlanModifiers: []planmodifier.Dynamic{replaceUnlessImported},
 		},
@@ -96,13 +103,57 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 	}
 }
 
-// stepsChanged requires replacement unless the prior `steps` are null, which they are only after
-// an import: the steps cannot be read back, so the first ones written are recorded, not applied.
+// stepsChanged requires replacement unless the prior or the planned steps are unknown to the
+// provider, i.e. neither `steps` nor `sensitive_steps` holds a step (hasSteps). That is so in
+// state after an import, or after both were removed from the configuration. The steps cannot be
+// read back, so the first ones written are recorded, not applied, and removing them only forgets
+// them.
 func stepsChanged(ctx context.Context, req planmodifier.DynamicRequest, resp *dynamicplanmodifier.RequiresReplaceIfFuncResponse) {
-	var prior dyntype.Value
+	var prior, priorSecret, planned, plannedSecret dyntype.Value
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, stepsPath, &prior)...)
-	resp.RequiresReplace = !prior.IsNull() && !prior.IsUnderlyingValueNull()
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, sensitiveStepsPath, &priorSecret)...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, stepsPath, &planned)...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, sensitiveStepsPath, &plannedSecret)...)
+	resp.RequiresReplace = hasSteps(prior, priorSecret) && hasSteps(planned, plannedSecret)
 }
+
+// hasSteps reports whether `steps` or `sensitive_steps` holds a step, as flowSteps merges both.
+// A value that is not known yet counts as holding one; null and `{}` hold none.
+func hasSteps(steps, sensitive dyntype.Value) bool {
+	return holdsStep(steps) || holdsStep(sensitive)
+}
+
+// holdsStep reports whether one step object holds a step; see hasSteps.
+func holdsStep(v dyntype.Value) bool {
+	if v.IsNull() || v.IsUnderlyingValueNull() {
+		return false
+	}
+	if v.IsUnknown() || v.IsUnderlyingValueUnknown() {
+		return true
+	}
+	elems, ok := objectElements(v.UnderlyingValue())
+	return !ok || len(elems) > 0
+}
+
+// ModifyPlan fails a plan that creates the entry without a step, since only an imported entry can
+// do without them. A replacement is planned as a create too, so this covers a changed `domain` and
+// `-replace`.
+func (r *integrationResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if !req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	var steps, sensitive dyntype.Value
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, stepsPath, &steps)...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, sensitiveStepsPath, &sensitive)...)
+	if !resp.Diagnostics.HasError() && !hasSteps(steps, sensitive) {
+		resp.Diagnostics.AddAttributeError(stepsPath, "Missing steps", missingStepsDetail)
+	}
+}
+
+// missingStepsDetail explains why a create needs a step.
+const missingStepsDetail = "Creating the config entry runs its config flow, which needs `steps` " +
+	"or `sensitive_steps`, e.g. `{ user = { host = \"192.168.1.50\" } }`. Only an entry imported " +
+	"from Home Assistant can do without them, and replacing it creates a new one."
 
 func (r *integrationResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	c := haClient(req, resp)

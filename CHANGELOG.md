@@ -8,6 +8,22 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 - Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
   2026.5.4 and 2026.10.0.
+- Security: the provider binary is built with Go 1.26.9 (`toolchain` in `go.mod`) instead of
+  1.26.0, and `google.golang.org/grpc` (1.83.2), `golang.org/x/net` (0.60.0),
+  `golang.org/x/crypto` (0.57.0) and `github.com/moby/go-archive` (0.3.0, tests only) are
+  updated. `govulncheck` reported reachable vulnerabilities before (11 in modules, at least 10 in
+  the Go 1.26.0 standard library: HTTP/2 memory and CPU exhaustion and crashes in the plugin's
+  gRPC server, `crypto/tls`, `net/url`) and none after.
+- CI: a `Security` workflow runs `govulncheck`, `gosec`, CodeQL and Trivy (dependency CVEs and
+  committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities, `gosec` findings
+  of medium severity or above, and fixable CRITICAL/HIGH Trivy findings fail the run; everything
+  else goes to code scanning alerts.
+- `homeassistant_integration`: `steps` is optional, so `tofu plan -generate-config-out` after an
+  import writes a configuration that plans without errors (`steps = null`). Only creating or
+  replacing an entry needs a step, in `steps` or, for a form of secrets only, in
+  `sensitive_steps`; a plan that would do it without one fails before anything is deleted.
+  Removing recorded steps from the configuration only forgets them, instead of failing. States
+  with recorded steps, with or without `ignore_changes`, plan no changes.
 
 ## 1.0.0
 
