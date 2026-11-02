@@ -63,7 +63,8 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
   and entities; other types are replaced. Import by `<entry_id>/<subentry_id>` (#67). `steps` is
   optional, so `tofu plan -generate-config-out` after an import writes a configuration that plans
   without errors (`steps = null`); only creating or replacing a subentry needs `steps` or
-  `sensitive_steps`.
+  `sensitive_steps`. While both are null before or after a change, as after an import, the steps
+  are only recorded or forgotten, without a reconfigure or a replacement.
 
 ## 1.0.0
 
