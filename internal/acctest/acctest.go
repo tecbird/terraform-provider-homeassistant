@@ -32,7 +32,7 @@ const (
 	EnvImageTag = "HOMEASSISTANT_IMAGE_TAG"
 	// DefaultImageTag is used when EnvImageTag is unset. Keep it equal to the newest tag of the
 	// CI matrix in .github/workflows/acceptance.yml.
-	DefaultImageTag = "2026.10.0"
+	DefaultImageTag = "2026.11.0"
 
 	image          = "ghcr.io/home-assistant/home-assistant"
 	startupTimeout = 5 * time.Minute

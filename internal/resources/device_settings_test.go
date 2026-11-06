@@ -144,7 +144,7 @@ func TestDeviceSettingsRefreshIsFieldGranular(t *testing.T) {
 	integration, name, byUser, area := "integration", "Moon", "Night Sky", "sky"
 	device := client.Device{
 		ID: "moon1", Name: &name, NameByUser: &byUser, AreaID: &area, Labels: []string{"other"},
-		DisabledBy: &integration, Identifiers: [][]string{{"moon", "x"}}, ConfigEntries: []string{"entry1"},
+		DisabledBy: &integration, Identifiers: [][]client.RegistryString{{"moon", "x"}}, ConfigEntries: []string{"entry1"},
 	}
 	m := deviceSettingsModel{
 		DeviceID:   types.StringValue("moon1"),

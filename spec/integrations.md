@@ -15,19 +15,25 @@ loop on result.type:
                    a step already submitted once → abort + error (no loops)
                    POST /api/config/config_entries/flow/<flow_id>   step.data ∪ step.sensitive_data
                    (on a HTTP error, e.g. 400 for data not matching the schema → abort + error)
+  "menu"         → as "form"; the step's data must be exactly {"next_step_id": <option>}, with
+                   <option> one of result.menu_options (else abort + error naming the options)
   "create_entry" → return result.result.entry_id
   "abort"        → reconfigure (entryID set) with reason "reconfigure_successful" → return entryID;
                    otherwise error with result.reason (HA already ended the flow, no DELETE)
-  other          → abort + error (unsupported: external steps, progress, menus)
+  other          → abort + error (unsupported: external steps, progress)
 ```
+
+A menu offers a choice of next steps instead of fields. HA sends `menu_options` as a list of
+`step_id`s or as an object from `step_id` to label, and takes the choice as the one field
+`next_step_id`. It then shows the chosen step, usually a form with that `step_id`.
 
 "abort" in the right-hand column means `DELETE /api/config/config_entries/flow/<flow_id>`. It is
 sent even if the context was cancelled. Steps are matched by `step_id`, not by position. On a key
 present in both maps, `sensitive_data` wins.
 
-The loop only asks the caller for the data of each form. `homeassistant_integration` answers by
-`step_id` as above; the typed integrations answer from field values (see *Answering forms from
-fields*), which may answer the same `step_id` more than once.
+The loop only asks the caller for the data of each form and menu. `homeassistant_integration`
+answers by `step_id` as above; the typed integrations answer from field values (see *Answering
+forms from fields*), which may answer the same `step_id` more than once and cannot answer a menu.
 
 Unit-tested against a fake HTTP server, with no real HA.
 
@@ -50,6 +56,15 @@ resource "homeassistant_integration" "cloud" {
     user = { password = var.cloud_password }
   }
 }
+
+# The template helper's flow starts with a menu of entity types.
+resource "homeassistant_integration" "answer" {
+  domain = "template"
+  steps = {
+    user   = { next_step_id = "sensor" }
+    sensor = { name = "Answer", state = "{{ 42 }}" }
+  }
+}
 ```
 
 | Argument | Type | |
@@ -63,7 +78,9 @@ The steps are two dynamic objects keyed by `step_id` (ADR-0021, which supersedes
 `step_id` cannot appear twice. A step's driver input is `steps[id]` as `data` and
 `sensitive_steps[id]` as `sensitive_data`. A step may appear in either object or in both; the two
 are merged per step, and on a field present in both, `sensitive_steps` wins. A form without
-fields is answered by `{}`.
+fields is answered by `{}`. A menu is answered by a step with the menu's `step_id` and the one
+field `next_step_id`, naming the chosen option (#65); the chosen option's form is a step of its
+own. Template and group helpers start with such a menu.
 
 | Computed | |
 |---|---|
@@ -81,6 +98,89 @@ fields is answered by `{}`.
   records them in state; nothing is sent to HA. After that, changing them forces replacement as
   usual. (A null `steps` in state marks the import, since `steps` is required otherwise.)
 
+## `homeassistant_integration_options`
+
+The options of a config entry, set through its options flow (issue #64). Many integrations keep
+their settings there rather than in the entry's data: `utility_meter`, `threshold`, `min_max`,
+`template`, `group`, and others. The entry may come from the UI or from
+`homeassistant_integration`; this resource never creates or deletes it.
+
+```hcl
+resource "homeassistant_integration_options" "frost" {
+  entry_id = homeassistant_integration.frost.id
+  steps = {
+    init = { lower = 2, hysteresis = 0.5 }
+  }
+}
+```
+
+| Argument | Type | |
+|---|---|---|
+| `entry_id` | string | required, forces replacement; the import ID |
+| `steps` | object: `step_id` → object of fields (dynamic) | required, at least one step |
+
+| Computed | |
+|---|---|
+| `domain` | from `config_entries/get` |
+
+`steps` has the shape of `homeassistant_integration`'s (ADR-0021). There is no
+`sensitive_steps`.
+
+**Reading the options.** `config_entries/get` does not return them. The only way to read them is
+to start the options flow: its first form carries the current options, as each field's
+`description.suggested_value` (or `default`). Aborting the flow (`DELETE`) changes nothing.
+
+```
+OptionsFlows.Form(entry_id):
+  POST /api/config/config_entries/options/flow  {"handler": entry_id, "show_advanced_options": true}
+  "form"  → DELETE …/options/flow/<flow_id>, return the form
+  "abort" → error with result.reason
+  other   → DELETE + error (unsupported: menus, external steps, progress)
+
+current value of a field = suggested_value if not null, else default if not null, else none
+```
+
+Only the first form can be read: reaching a later one means submitting the first, and submitting
+the last one saves the options.
+
+**Writing the options.** The options flow is run with the same init. Each form is answered as the
+UI does when only some fields are edited: every field keeps its current value, and the fields of
+the step with the form's `step_id` replace it. A field set to `null` is left out, which unsets an
+optional option. A section is merged field by field; it must be an object, not `null`, which
+would read back as the section's current values and never settle (unset its fields instead). A
+form whose `step_id` has no step keeps its current values. The same `step_id` twice is an error
+(no loops), and so is a field that the form does not have, or a section set to anything but an
+object, before anything is submitted. The flow ends with `create_entry`; `abort` is an error, and so is a step in `steps`
+whose `step_id` the flow never showed (a typo, or a form the flow skips): the options are saved
+by then, but that step's fields were not set. A menu, when reading or writing, is unsupported:
+the flow is aborted with an error before anything is submitted. Leaving fields out of the answer would not keep
+them: options flows built on `SchemaOptionsFlowHandler` remove optional options that a submit
+omits.
+
+- **Field-granular:** only the fields in `steps` are managed (like the settings resources,
+  ADR-0010). Other options keep their values, whoever set them.
+- **Create:** the entry must exist and have an options flow (`supports_options`), else error.
+  Then as update.
+- **Update:** read the first form. A field in the first step that the form does not have is an
+  error. If `steps` has only the first form's step and each of its fields already has its value,
+  nothing is submitted; otherwise run the options flow.
+- **Read:** entry gone → remove from state. Otherwise read the first form and replace the fields of
+  its step in `steps` with their current values (none → `null`). Fields the form does not have,
+  and steps other than the first form's, cannot be read and keep their state values. Values are
+  compared by semantic equality (ADR-0006), so `5` and `5.0` are no drift. Each refresh starts and
+  aborts one options flow.
+- **Delete:** leaves the options as they are. HA cannot tell which values they had before.
+- **Import:** by `entry_id`. `steps` is null in state after the import, so the read fills it with
+  every field of the first form that has a value. A configuration with exactly these fields (what
+  `tofu plan -generate-config-out` writes) plans no changes. Leaving fields out afterwards is an
+  in-place update that sends nothing, because the remaining fields already have their values.
+
+**Testing.** Unit tests for reading, answering, the unchanged check and unknown fields against a
+fake HTTP server. Acceptance test with a `threshold` entry created outside Tofu: import and an
+empty plan, a partial update that keeps the other options, drift from outside Tofu, unsetting
+with `null`, an unknown field, and destroy leaving the options. An entry of `local_calendar`,
+which has no options flow, is an error.
+
 ## `data.homeassistant_integration`
 
 Arguments: `domain` (required) and `title` (optional). It must match exactly one entry; no match
@@ -95,7 +195,8 @@ release, so the typed resources do not name steps. They answer every form from o
 field values (see *Answering forms from fields*). Hue and Z-Wave JS are not planned.
 
 The schemas below come from each integration's `config_flow.py` in HA 2026.4 and were checked
-against 2026.5 (the oldest release of the support window), 2026.9 and 2026.10.
+against 2026.5, 2026.9, 2026.10 and 2026.11. 2026.11 marks MQTT's password and client key fields
+as secret, which leaves the forms the provider answers as they were.
 
 Common to both:
 

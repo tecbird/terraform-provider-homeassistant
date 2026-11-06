@@ -15,6 +15,8 @@ type ConfigEntry struct {
 	Title      string  `json:"title"`
 	State      string  `json:"state"`
 	DisabledBy *string `json:"disabled_by"`
+	// SupportsOptions reports whether the integration has an options flow.
+	SupportsOptions bool `json:"supports_options"`
 }
 
 // ConfigEntries reads config entries over WebSocket (`config_entries/get`) and deletes them over

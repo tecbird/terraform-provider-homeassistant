@@ -340,7 +340,9 @@ func setUpTwinDevices(t *testing.T) (deviceIDs, entityIDs [2]string) {
 				return false, err
 			}
 			for _, d := range list {
-				if slices.ContainsFunc(d.Identifiers, func(ident []string) bool { return slices.Equal(ident, []string{"mqtt", id}) }) {
+				if slices.ContainsFunc(d.Identifiers, func(ident []client.RegistryString) bool {
+					return slices.Equal(ident, []client.RegistryString{"mqtt", client.RegistryString(id)})
+				}) {
 					deviceIDs[i] = d.ID
 				}
 			}
