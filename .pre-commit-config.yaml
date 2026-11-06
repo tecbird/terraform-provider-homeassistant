@@ -1,7 +1,7 @@
 # Hooks from ADR-0017. Run `pre-commit install` once per clone; CI runs the same hooks.
 repos:
   - repo: https://github.com/golangci/golangci-lint
-    rev: v2.14.0
+    rev: v2.15.0
     hooks:
       - id: golangci-lint-config-verify
       - id: golangci-lint-full

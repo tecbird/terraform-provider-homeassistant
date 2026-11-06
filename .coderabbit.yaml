@@ -1,0 +1,33 @@
+# CodeRabbit review configuration (https://docs.coderabbit.ai/reference/configuration).
+# Free for public repositories; the CodeRabbit GitHub App must be installed on the repository.
+language: en-US
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "internal/**/*.go"
+      instructions: >-
+        Check error handling against spec/overview.md (typed client errors, diagnostics on the
+        right attribute), resource lifecycle correctness (create, read, update, delete, import,
+        drift against the stored baseline per ADR-0023), and that secrets never reach logs or
+        plan output.
+    - path: "spec/**"
+      instructions: "Check that the spec matches the code change in the same PR."
+    - path: ".github/workflows/**"
+      instructions: >-
+        Check least-privilege permissions and that third-party actions are pinned to a commit SHA.
+  tools:
+    gitleaks:
+      enabled: true
+    golangci-lint:
+      enabled: true
+    actionlint:
+      enabled: true
+chat:
+  auto_reply: true

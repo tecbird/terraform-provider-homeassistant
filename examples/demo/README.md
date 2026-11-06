@@ -17,7 +17,7 @@ A self-contained configuration for a fresh Home Assistant in Docker. It shows:
 It needs Docker and OpenTofu ≥ 1.8.
 
 ```sh
-eval "$(./up.sh)"    # start and onboard Home Assistant; HA_VERSION=2026.5.4 for another version
+eval "$(./up.sh)"    # start and onboard Home Assistant; HA_VERSION=2026.6.4 for another version
 tofu init
 tofu apply
 ```

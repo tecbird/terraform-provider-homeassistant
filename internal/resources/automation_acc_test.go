@@ -420,3 +420,11 @@ func TestAccAutomation_LegacyKeys(t *testing.T) {
 		},
 	})
 }
+
+func TestAccAutomation_upgrade(t *testing.T) {
+	const addr = "homeassistant_automation.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+fmt.Sprintf(accAutomation, "Acc Motion"),
+		resource.TestCheckResourceAttr(addr, "id", "acc_motion"),
+		resource.TestCheckResourceAttr(addr, "entity_id", "automation.acc_motion"),
+	)
+}

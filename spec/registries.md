@@ -86,13 +86,14 @@ These edit registry entries owned by integrations. They are **field-granular**:
   nothing of the user's to reset.
 - **Read:** if the entry is missing → remove from state. Set attributes are refreshed, so a
   change made elsewhere to a configured field shows as drift; unset ones stay null.
-- **Import:** by ID. The imported state manages no field; the first plan sets the configured
-  ones.
+- **Import:** by entity ID or device ID. The imported state manages no field; the first plan
+  sets the configured ones.
 
 ### `homeassistant_entity_settings`
 
-Commands: `config/entity_registry/get`, `config/entity_registry/update`.
-ID and import ID: `entity_id`.
+Commands: `config/entity_registry/get`, `config/entity_registry/list`,
+`config/entity_registry/update`.
+ID: the registry `id` (ADR-0025). Import ID: `entity_id`.
 
 ```hcl
 resource "homeassistant_entity_settings" "ceiling" {
@@ -105,13 +106,20 @@ resource "homeassistant_entity_settings" "ceiling" {
 
 | Argument | Type | Reset value |
 |---|---|---|
-| `entity_id` | string, required, forces replacement | — |
+| `entity_id` | string, required; selects the entity on create, renames it in place afterwards | not reset |
 | `name` | string | `null` (back to the integration's name) |
 | `icon` | string | `null` |
 | `area_id` | string | `null` (inherits the device's area) |
 | `labels` | set(string) | `[]` |
 | `hidden` | bool → `hidden_by: "user"`, or `null` if it was `"user"` | `null` if `true` |
 | `disabled` | bool → `disabled_by: "user"`, or `null` if it was `"user"` | `null` if `true` |
+
+Since HA 2026.11, HA shows the device name in front of a `name` set here, as it always did for
+the integration's name, unless the entity has an area of its own. Upgrading HA to 2026.11 strips the device name from the front of stored
+names when the entity has no area of its own (entity registry 1.24), so a config with
+`name = "Kitchen Lamp Power"` on the device "Kitchen Lamp" then plans a change from `"Power"`.
+The provider passes `name` through unchanged and does not rewrite it; the config has to drop the
+device name.
 
 `hidden_by` and `disabled_by` can also be set by integrations, devices, or config entries. The
 provider maps the read-back value `"user"` to `true` and anything else to `false`, so `false`
@@ -120,8 +128,37 @@ to clear a `"user"` value: a `false` never clears a flag that something else set
 becomes managed (create, or added to config), the provider reads the entry to find out whether
 the user set the flag.
 
+The entity is identified by its registry `id`, which a rename does not change:
+
+- **Create:** wait for `entity_id` as for every settings resource, then record the entry's `id`.
+- **Read:** `get` by the `entity_id` in state. If that is `not_found` or returns another `id`,
+  `list` and find the entry by `id`. If none has it → remove from state. `entity_id` is always
+  refreshed, so a rename made elsewhere shows as drift and the next apply renames it back. State
+  without `id` (written before ADR-0025) gets it from the `get` by `entity_id`.
+- **Update:** a changed `entity_id` is sent as `new_entity_id`, together with the other changed
+  fields, in one `update`. HA rejects an `entity_id` that another entity has; the error suggests
+  `tofu apply -replace=<address>` to manage that other entity instead.
+- **Delete:** resets the other configured fields on the entity's current `entity_id`, and keeps
+  that entity ID.
+- A resource in `for_each` keyed by entity ID changes address when it is renamed. A `moved`
+  block keeps it, and the resource docs show one:
+
+  ```hcl
+  resource "homeassistant_entity_settings" "lights" {
+    for_each  = toset(["light.desk", "light.shelf"]) # was "light.office"
+    entity_id = each.key
+    area_id   = homeassistant_area.office.id
+  }
+
+  moved {
+    from = homeassistant_entity_settings.lights["light.office"]
+    to   = homeassistant_entity_settings.lights["light.desk"]
+  }
+  ```
+
 | Computed | |
 |---|---|
+| `id` | registry ID of the entity |
 | `platform` | integration that owns the entity |
 | `device_id` | |
 | `original_name` | name before the override |

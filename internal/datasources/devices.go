@@ -45,7 +45,7 @@ func newDeviceModel(d client.Device) deviceModel {
 		NameByUser:    types.StringPointerValue(d.NameByUser),
 		Manufacturer:  types.StringPointerValue(d.Manufacturer),
 		Model:         types.StringPointerValue(d.Model),
-		SWVersion:     types.StringPointerValue(d.SWVersion),
+		SWVersion:     types.StringPointerValue(d.SWVersion.StringPointer()),
 		AreaID:        types.StringPointerValue(d.AreaID),
 		Labels:        stringSet(d.Labels),
 		ConfigEntries: types.ListValueMust(types.StringType, entries),

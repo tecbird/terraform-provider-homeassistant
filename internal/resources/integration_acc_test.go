@@ -248,3 +248,11 @@ resource "homeassistant_integration" "wrong_step" {
 		},
 	})
 }
+
+func TestAccIntegration_upgrade(t *testing.T) {
+	const addr = "homeassistant_integration.test"
+	acctest.UpgradeTest(t, calendarConfig("Acc Chores"),
+		resource.TestCheckResourceAttr(addr, "title", "Acc Chores"),
+		resource.TestCheckResourceAttr(addr, "state", "loaded"),
+	)
+}

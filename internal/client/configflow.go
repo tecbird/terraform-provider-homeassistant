@@ -29,14 +29,21 @@ func (s FlowStep) input() map[string]any {
 	return in
 }
 
-// FlowForm is a form that a flow shows.
+// FlowForm is a form that a flow shows, or a menu.
 type FlowForm struct {
 	// Flow names the flow for error messages, e.g. "config flow for shelly".
 	Flow   string
 	StepID string
 	// Fields is the form's data_schema.
 	Fields []FormField
+	// Menu is set for a menu, which offers MenuOptions instead of fields. It is answered by
+	// MenuNextStep set to one of the options.
+	Menu        bool
+	MenuOptions []string
 }
+
+// MenuNextStep is the one field that answers a menu: the step_id of the chosen option.
+const MenuNextStep = "next_step_id"
 
 // FormField is one field of a form's data_schema, as HA serializes it.
 type FormField struct {
@@ -128,8 +135,50 @@ func (e *FlowFieldMissingError) Error() string {
 	return fmt.Sprintf("%s asked for %q in step %q, which is not set", e.Flow, e.Field, e.StepID)
 }
 
-// FlowUnsupportedError means the flow returned a result the driver cannot handle, e.g. a menu,
-// an external step, or a progress step.
+// FlowMenuChoiceError means a menu was not answered by exactly one of its options.
+type FlowMenuChoiceError struct {
+	Flow   string
+	StepID string
+	// Choice is the answer's MenuNextStep, nil if it has none.
+	Choice  any
+	Options []string
+	// Extra are the answer's other fields, which a menu does not take.
+	Extra []string
+}
+
+func (e *FlowMenuChoiceError) Error() string {
+	menu := fmt.Sprintf("%s showed the menu %q", e.Flow, e.StepID)
+	switch {
+	case len(e.Extra) > 0:
+		return fmt.Sprintf("%s, which takes only %s, but the step also has %s", menu, MenuNextStep, quoteList(e.Extra))
+	case e.Choice == nil:
+		return fmt.Sprintf("%s, but the step has no %s; the options are %s", menu, MenuNextStep, quoteList(e.Options))
+	}
+	// The choice is not echoed: it may come from sensitive_steps.
+	return fmt.Sprintf("%s, but the step's %s is none of its options %s", menu, MenuNextStep, quoteList(e.Options))
+}
+
+// checkMenuChoice returns a FlowMenuChoiceError unless data answers the menu with one of its
+// options and nothing else.
+func checkMenuChoice(form FlowForm, data map[string]any) error {
+	choice, ok := data[MenuNextStep].(string)
+	var extra []string
+	for k := range data {
+		if k != MenuNextStep {
+			extra = append(extra, k)
+		}
+	}
+	if len(extra) == 0 && ok && slices.Contains(form.MenuOptions, choice) {
+		return nil
+	}
+	slices.Sort(extra)
+	return &FlowMenuChoiceError{
+		Flow: form.Flow, StepID: form.StepID, Choice: data[MenuNextStep], Options: form.MenuOptions, Extra: extra,
+	}
+}
+
+// FlowUnsupportedError means the flow returned a result the driver cannot handle, e.g. an
+// external step or a progress step.
 type FlowUnsupportedError struct {
 	Flow   string
 	Type   string
@@ -149,7 +198,26 @@ type flowResult struct {
 	Errors     map[string]string `json:"errors"`
 	Reason     string            `json:"reason"`
 	// Result is the config entry of a config flow's create_entry; an options flow has `true`.
-	Result json.RawMessage `json:"result"`
+	Result      json.RawMessage `json:"result"`
+	MenuOptions menuOptions     `json:"menu_options"`
+}
+
+// menuOptions are the step_ids a menu offers. HA sends a list of step_ids, or an object from
+// step_id to label.
+type menuOptions []string
+
+func (m *menuOptions) UnmarshalJSON(b []byte) error {
+	var list []string
+	if err := json.Unmarshal(b, &list); err == nil {
+		*m = list
+		return nil
+	}
+	var labels map[string]json.RawMessage
+	if err := json.Unmarshal(b, &labels); err != nil {
+		return fmt.Errorf("menu_options must be a list or an object: %w", err)
+	}
+	*m = slices.Sorted(maps.Keys(labels))
+	return nil
 }
 
 // flowDriver drives the flows at one REST path: it answers each form until HA ends the flow.
@@ -158,11 +226,12 @@ type flowDriver struct {
 	path string
 }
 
-// run starts the flow with init and answers each form. It returns the result that ends the flow:
-// create_entry or abort.
+// run starts the flow with init and answers each form and menu. It returns the result that ends
+// the flow: create_entry or abort.
 //
-// Form errors, a failed answer, a rejected submit, or an unsupported result abort the flow
-// (`DELETE`) before the error is returned. The DELETE runs even if ctx is cancelled.
+// Form errors, a failed answer, a menu answer that is not one of its options, a rejected submit,
+// or an unsupported result abort the flow (`DELETE`) before the error is returned. The DELETE
+// runs even if ctx is cancelled.
 func (d flowDriver) run(ctx context.Context, name string, init map[string]any, answer FlowAnswer) (flowResult, error) {
 	var res flowResult
 	if err := d.rest.Do(ctx, http.MethodPost, d.path, init, &res); err != nil {
@@ -173,11 +242,18 @@ func (d flowDriver) run(ctx context.Context, name string, init map[string]any, a
 		case "create_entry", "abort":
 			return res, nil
 
-		case "form":
+		case "form", "menu":
 			if len(res.Errors) > 0 {
 				return res, d.abort(ctx, res.FlowID, &FlowFormError{Flow: name, StepID: res.StepID, Errors: res.Errors})
 			}
-			data, err := answer(ctx, FlowForm{Flow: name, StepID: res.StepID, Fields: res.DataSchema})
+			form := FlowForm{Flow: name, StepID: res.StepID, Fields: res.DataSchema}
+			if res.Type == "menu" {
+				form.Menu, form.MenuOptions = true, res.MenuOptions
+			}
+			data, err := answer(ctx, form)
+			if err == nil && form.Menu {
+				err = checkMenuChoice(form, data)
+			}
 			if err != nil {
 				return res, d.abort(ctx, res.FlowID, err)
 			}
@@ -216,7 +292,7 @@ func NewConfigFlows(rest *RESTClient) ConfigFlows {
 }
 
 // Run starts a config flow for handler, answers each form with the step of the same step_id, and
-// returns the entry_id of the config entry.
+// returns the entry_id of the config entry. A menu is a step too, answered by its MenuNextStep.
 //
 // A non-empty entryID starts a reconfigure flow for that entry instead; it returns entryID once HA
 // aborts with ReasonReconfigureSuccessful.
@@ -303,10 +379,13 @@ func (f OptionsFlows) Run(ctx context.Context, entryID string, answer FlowAnswer
 // file_id of the content, uploaded to rest. A section is answered with a nested object of its own
 // fields. Other fields are left out, so HA applies its defaults; a required one without a default
 // is an error. The same step with the same fields a second time is an error, so the flow cannot
-// loop.
+// loop. A menu is unsupported: field values cannot choose one of its options.
 func FieldAnswer(rest *RESTClient, values map[string]any, files map[string]string) FlowAnswer {
 	seen := map[string]bool{}
 	return func(ctx context.Context, form FlowForm) (map[string]any, error) {
+		if form.Menu {
+			return nil, &FlowUnsupportedError{Flow: form.Flow, Type: "menu", StepID: form.StepID}
+		}
 		names := fieldNames(form.Fields)
 		slices.Sort(names)
 		key := form.StepID + "\x00" + strings.Join(names, "\x00")
