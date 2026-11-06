@@ -268,3 +268,11 @@ resource "homeassistant_script" "test" {
 		},
 	})
 }
+
+func TestAccScript_upgrade(t *testing.T) {
+	const addr = "homeassistant_script.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+fmt.Sprintf(accScript, "Acc Goodnight"),
+		resource.TestCheckResourceAttr(addr, "id", "acc_goodnight"),
+		checkScriptConfig(t, "acc_goodnight", fmt.Sprintf(accScriptStored, "Acc Goodnight")),
+	)
+}

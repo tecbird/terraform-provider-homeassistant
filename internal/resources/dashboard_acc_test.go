@@ -311,3 +311,20 @@ resource "homeassistant_dashboard" "test" {
 		}},
 	})
 }
+
+func TestAccDashboard_upgrade(t *testing.T) {
+	const addr = "homeassistant_dashboard.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+accDashboardConfig+`
+resource "homeassistant_dashboard" "test" {
+  url_path = "acc-dash"
+  title    = "Acc Dash"
+  icon     = "mdi:home-variant"
+  config = {
+    views = [{ type = "sections", title = "Overview", sections = [local.quick_actions] }]
+  }
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc-dash"),
+		resource.TestCheckResourceAttr(addr, "dashboard_id", "acc_dash"),
+	)
+}

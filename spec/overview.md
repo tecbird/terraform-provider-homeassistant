@@ -60,7 +60,8 @@ Which operation uses which transport:
 | Read config entries | WS | `config_entries/get` |
 | Floor / area / label registry | WS | `config/<x>_registry/list|create|update|delete` |
 | Entity / device registry | WS | `config/entity_registry/get|update`, `config/device_registry/list|update` |
-| Input helpers | WS | `<domain>/list|create|update|delete` (id field `<domain>_id`) |
+| Helpers (`input_*`, `counter`, `timer`, `schedule`) | WS | `<domain>/list|create|update|delete` (id field `<domain>_id`) |
+| Energy dashboard preferences | WS | `energy/get_prefs`, `energy/save_prefs` |
 | Dashboards | WS | `lovelace/dashboards/list|create|update|delete`, `lovelace/config`, `lovelace/config/save` |
 
 ## Inventory
@@ -84,13 +85,15 @@ Which operation uses which transport:
 | `homeassistant_floor` | generated | [registries.md](registries.md) |
 | `homeassistant_area` | generated | [registries.md](registries.md) |
 | `homeassistant_label` | generated | [registries.md](registries.md) |
-| `homeassistant_entity_settings` | `entity_id` | [registries.md](registries.md) |
+| `homeassistant_entity_settings` | registry `id` (ADR-0025) | [registries.md](registries.md) |
 | `homeassistant_device_settings` | `device_id` | [registries.md](registries.md) |
 | `homeassistant_automation` | user-chosen | [automations.md](automations.md) |
 | `homeassistant_script` | user-chosen | [automations.md](automations.md) |
 | `homeassistant_scene` | user-chosen | [automations.md](automations.md) |
 | `homeassistant_input_boolean`, `_number`, `_text`, `_select`, `_datetime`, `_button` | generated | [helpers.md](helpers.md) |
+| `homeassistant_counter`, `homeassistant_timer`, `homeassistant_schedule` | generated | [helpers.md](helpers.md) |
 | `homeassistant_dashboard` | `url_path` | [dashboards.md](dashboards.md) |
+| `homeassistant_energy_preferences` | constant `energy_preferences` | [energy.md](energy.md) |
 | `homeassistant_integration` | `entry_id` | [integrations.md](integrations.md) |
 | `homeassistant_esphome`, `homeassistant_mqtt` | `entry_id` | [integrations.md](integrations.md) |
 
@@ -101,7 +104,10 @@ See [functions.md](functions.md).
 
 ## Conventions
 
-**IDs.** Each resource's import ID is its `id` attribute. Schema descriptions state the format.
+**IDs.** A resource's import ID is its `id` attribute, except for the settings resources:
+`homeassistant_device_settings` is imported by `device_id`, and
+`homeassistant_entity_settings` by `entity_id`, not by its registry `id` (ADR-0025). Schema
+descriptions state the format.
 Generated IDs follow ADR-0009 (collision check, optional `id` via create-then-rename).
 User-chosen IDs follow ADR-0008 (`^[a-z0-9_]+$`, change forces replacement); create fails if
 the ID is taken (ADR-0024).

@@ -230,3 +230,18 @@ resource "homeassistant_floor" "clash" {
 		},
 	})
 }
+
+func TestAccFloor_upgrade(t *testing.T) {
+	const addr = "homeassistant_floor.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+`
+resource "homeassistant_floor" "test" {
+  name    = "Acc Floor"
+  level   = 0
+  icon    = "mdi:home-floor-0"
+  aliases = ["Ground", "EG"]
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc_floor"),
+		resource.TestCheckResourceAttr(addr, "aliases.#", "2"),
+	)
+}

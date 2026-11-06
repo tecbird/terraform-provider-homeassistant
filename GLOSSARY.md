@@ -42,6 +42,9 @@ label, entity, and device registries.
 `light.bedroom_ceiling`. It holds metadata (name override, area, labels, hidden, disabled), not
 state.
 
+**Registry ID** — The `id` of an entity registry entry, a random hex string. Unlike the entity
+ID, it survives a rename. It identifies `homeassistant_entity_settings` (ADR-0025).
+
 **Integration** — An HA component that connects to a service or device family (ESPHome, MQTT,
 Hue, …).
 
@@ -60,7 +63,7 @@ data. It is not used for changing connection data.
 
 **Helper** — A user-defined stateful entity that automations can read and write:
 `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`,
-`input_button`.
+`input_button`, `counter`, `timer`, `schedule`.
 
 **Automation** — Triggers, conditions, and actions that HA runs on its own. It is identified by a
 config `id`, and its entity ID is derived from its alias — not from its id.

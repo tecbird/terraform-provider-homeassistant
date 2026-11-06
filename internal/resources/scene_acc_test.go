@@ -212,3 +212,11 @@ resource "homeassistant_scene" "test" {
 		},
 	})
 }
+
+func TestAccScene_upgrade(t *testing.T) {
+	const addr = "homeassistant_scene.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+fmt.Sprintf(accScene, "Acc Movie Night"),
+		resource.TestCheckResourceAttr(addr, "id", "acc_movie"),
+		resource.TestCheckResourceAttr(addr, "entity_id", "scene.acc_movie_night"),
+	)
+}

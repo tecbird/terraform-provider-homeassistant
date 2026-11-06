@@ -95,7 +95,8 @@ release, so the typed resources do not name steps. They answer every form from o
 field values (see *Answering forms from fields*). Hue and Z-Wave JS are not planned.
 
 The schemas below come from each integration's `config_flow.py` in HA 2026.4 and were checked
-against 2026.5 (the oldest release of the support window), 2026.9 and 2026.10.
+against 2026.5, 2026.9, 2026.10 and 2026.11. 2026.11 marks MQTT's password and client key fields
+as secret, which leaves the forms the provider answers as they were.
 
 Common to both:
 
