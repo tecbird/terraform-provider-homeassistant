@@ -42,6 +42,9 @@ label, entity, and device registries.
 `light.bedroom_ceiling`. It holds metadata (name override, area, labels, hidden, disabled), not
 state.
 
+**Registry ID** — The `id` of an entity registry entry, a random hex string. Unlike the entity
+ID, it survives a rename. It identifies `homeassistant_entity_settings` (ADR-0025).
+
 **Integration** — An HA component that connects to a service or device family (ESPHome, MQTT,
 Hue, …).
 

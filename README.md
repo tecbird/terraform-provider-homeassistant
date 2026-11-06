@@ -14,7 +14,8 @@ scenes, helpers, dashboards, and integrations.
   `homeassistant_scene`), taking their config as an object, e.g. from `yamldecode(file(...))`.
 - **Helpers:** `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`
   and `input_button`, validated at plan time.
-- **Dashboards** (`homeassistant_dashboard`).
+- **Dashboards** (`homeassistant_dashboard`) and the **Energy dashboard preferences**
+  (`homeassistant_energy_preferences`).
 - **Integrations:** any config entry by answering its config flow
   (`homeassistant_integration`), plus typed resources for ESPHome and MQTT
   (`homeassistant_esphome`, `homeassistant_mqtt`).
@@ -82,8 +83,8 @@ only in a new major version, and each one is listed under **Breaking** in
 [`CHANGELOG.md`](CHANGELOG.md). Pin the major version (`version = "~> 1.0"`) and read the
 changelog before you move to a new one.
 
-The provider supports the six most recent monthly Home Assistant releases, currently 2026.5 to
-2026.10 ([ADR-0003](adr/0003-home-assistant-support-window.md)). It does not check the version.
+The provider supports the six most recent monthly Home Assistant releases, currently 2026.6 to
+2026.11 ([ADR-0003](adr/0003-home-assistant-support-window.md)). It does not check the version.
 Against an older Home Assistant, some configs may fail with Home Assistant's own validation errors.
 
 ## Development
@@ -106,11 +107,28 @@ are skipped without `TF_ACC`:
 ```sh
 TF_ACC=1 TF_ACC_TERRAFORM_PATH="$(which tofu)" \
   TF_ACC_PROVIDER_NAMESPACE=toelke TF_ACC_PROVIDER_HOST=registry.opentofu.org \
-  HOMEASSISTANT_IMAGE_TAG=2026.10.0 \
+  HOMEASSISTANT_IMAGE_TAG=2026.11.0 \
   go test -run '^TestAcc' ./...
 ```
 
 `HOMEASSISTANT_IMAGE_TAG` is optional and defaults to the newest version in the CI matrix.
+
+Each resource except `homeassistant_esphome` (which has no acceptance test, because it needs a
+reachable ESPHome device) also has an upgrade test, `TestAccXxx_upgrade`, built with
+`acctest.UpgradeTest`. It applies the resource's basic configuration with the latest released provider of the current
+major version (`acctest.ReleasedVersion`, e.g. `~> 1.0`), then plans the same configuration with
+the build under test. The plan must be empty, so a change that breaks existing state fails the
+test (see [Stability](#stability)). The released provider is downloaded from the registry, so
+these tests need network access to it. The first release of a new major version updates
+`ReleasedVersion`.
+
+A breaking change may make users change their configuration, but never their state or Home
+Assistant ([ADR-0026](adr/0026-breaking-changes-never-break-state.md)). It gets no exception from
+the upgrade test. Instead, its pull request switches the test to
+`acctest.UpgradeTestTo(t, released, current, …)`: `released` is the old configuration, applied
+with the released provider, and `current` is the new one, which must plan empty with the build
+under test. If the state schema changes, the resource needs a state upgrader for that. The pull
+request also tests that the old configuration fails with a diagnostic that says what to change.
 
 #### Bumping the Home Assistant versions
 
@@ -119,7 +137,7 @@ CI tests the oldest and the newest of the six most recent monthly HA releases
 
 1. In [`.github/workflows/acceptance.yml`](.github/workflows/acceptance.yml), set the `ha` matrix
    to the latest patch release of the newest month and of the month five releases before it,
-   e.g. `2026.5.4` and `2026.10.0`, and set the `ha` of the OpenTofu 1.8 cell under `include` to
+   e.g. `2026.6.4` and `2026.11.0`, and set the `ha` of the OpenTofu 1.8 cell under `include` to
    the oldest one. Tags are listed at <https://github.com/home-assistant/core/releases>. Update
    the window named under [Stability](#stability) too.
 2. Set `DefaultImageTag` in [`internal/acctest/acctest.go`](internal/acctest/acctest.go) to the
@@ -151,6 +169,10 @@ pick it up from there.
 
 1. Move the `Unreleased` entries in `CHANGELOG.md` under the new version, and merge that.
 2. `git tag vX.Y.Z origin/main && git push origin vX.Y.Z`.
+3. After the first release of a new major version, set `ReleasedVersion` in
+   [`internal/acctest/upgrade.go`](internal/acctest/upgrade.go) to it (e.g. `~> 2.0`), so the
+   upgrade tests start from it, and switch every `acctest.UpgradeTestTo` back to
+   `acctest.UpgradeTest` with its new configuration.
 
 Before the first release, these steps are needed once:
 
