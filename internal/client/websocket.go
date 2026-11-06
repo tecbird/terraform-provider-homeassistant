@@ -161,7 +161,7 @@ func (c *WSClient) connection(ctx, parent context.Context) (*wsConn, error) {
 			c.dialing = nil
 			if d.err == nil {
 				c.conn = d.conn
-				go c.readLoop(d.conn)
+				go c.readLoop(d.conn) // #nosec G118 -- lives as long as the shared connection, not one command
 			}
 			close(d.done)
 			c.mu.Unlock()

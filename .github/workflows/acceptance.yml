@@ -24,11 +24,11 @@ jobs:
       matrix:
         # Oldest and newest release of the support window (ADR-0003). See "Bumping the Home
         # Assistant versions" in README.md.
-        ha: ["2026.5.4", "2026.10.0"]
+        ha: ["2026.6.4", "2026.11.0"]
         tofu: ["latest"]
         # The oldest supported OpenTofu (ADR-0016), once, against the oldest HA.
         include:
-          - ha: "2026.5.4"
+          - ha: "2026.6.4"
             tofu: "1.8.x"
     steps:
       - uses: actions/checkout@v7

@@ -36,7 +36,7 @@ output "has_mqtt" {
 - `longitude` (Number) Longitude of the location.
 - `time_zone` (String) IANA time zone, e.g. `Europe/Berlin`.
 - `unit_system` (Attributes) Units the instance displays values in. (see [below for nested schema](#nestedatt--unit_system))
-- `version` (String) Home Assistant version, e.g. `2026.10.0`.
+- `version` (String) Home Assistant version, e.g. `2026.11.0`.
 
 <a id="nestedatt--unit_system"></a>
 ### Nested Schema for `unit_system`

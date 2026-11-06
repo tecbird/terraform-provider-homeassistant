@@ -262,3 +262,16 @@ resource "homeassistant_entity_settings" "moon" {
 		},
 	})
 }
+
+func TestAccDeviceSettings_upgrade(t *testing.T) {
+	const addr = "homeassistant_device_settings.moon"
+	acctest.UpgradeTest(t, deviceSettingsConfig(moonDevice(t), `
+  name_by_user = "Acc Night Light"
+  area_id      = homeassistant_area.sky.id
+  labels       = [homeassistant_label.celestial.id]
+`),
+		resource.TestCheckResourceAttr(addr, "name_by_user", "Acc Night Light"),
+		resource.TestCheckResourceAttr(addr, "area_id", "acc_sky"),
+		resource.TestCheckResourceAttr(addr, "identifiers.0.0", "moon"),
+	)
+}
