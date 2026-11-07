@@ -220,3 +220,17 @@ resource "homeassistant_input_boolean" "clash" {
 		},
 	})
 }
+
+func TestAccInputBoolean_upgrade(t *testing.T) {
+	const addr = "homeassistant_input_boolean.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+`
+resource "homeassistant_input_boolean" "test" {
+  name    = "Acc Toggle"
+  icon    = "mdi:toggle-switch"
+  initial = true
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc_toggle"),
+		resource.TestCheckResourceAttr(addr, "entity_id", "input_boolean.acc_toggle"),
+	)
+}

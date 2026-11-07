@@ -55,7 +55,7 @@ func (d *configDataSource) Schema(_ context.Context, _ datasource.SchemaRequest,
 		Description: "Reads the configuration of the Home Assistant instance (`GET /api/config`).",
 		Attributes: map[string]schema.Attribute{
 			"version": schema.StringAttribute{
-				Description: "Home Assistant version, e.g. `2026.10.0`.",
+				Description: "Home Assistant version, e.g. `2026.11.0`.",
 				Computed:    true,
 			},
 			"location_name": schema.StringAttribute{

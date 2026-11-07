@@ -1,7 +1,8 @@
 # Dashboards
 
-The WebSocket `lovelace/*` API, storage-mode dashboards only. YAML-mode dashboards and the default
-"Overview" dashboard are out of scope.
+The WebSocket `lovelace/*` API, storage-mode dashboards only. YAML-mode dashboards are out of
+scope. The built-in default "Overview" dashboard has its own resource,
+`homeassistant_default_dashboard`, described at the end of this file.
 
 ## `homeassistant_dashboard`
 
@@ -100,3 +101,40 @@ locals {
 ```
 
 Card builder functions ([functions.md](functions.md)) build the same objects with less typing.
+
+## `homeassistant_default_dashboard`
+
+The built-in default ("Overview") dashboard (issue #66). It has no `url_path`, so
+`homeassistant_dashboard` cannot address it. There is one per instance, so this is a singleton with
+the fixed ID `default`. It manages only the config: the default dashboard's title, icon, and
+sidebar visibility are not touched.
+
+```hcl
+resource "homeassistant_default_dashboard" "overview" {
+  config = {
+    views = [{ type = "sections", title = "Home", sections = [local.quick_actions] }]
+  }
+}
+```
+
+| Argument | Type | |
+|---|---|---|
+| `config` | dynamic (stored baseline, ADR-0023; semantic equality) | required; the full Lovelace config |
+
+| Computed | |
+|---|---|
+| `id` | always `default` (also the import ID; any other import ID is an error) |
+
+The `lovelace/config*` commands address the default dashboard by leaving `url_path` out.
+
+| Operation | Calls |
+|---|---|
+| Create | `lovelace/config` (`force: true`): a saved config fails the create and names `tofu import` (like ADR-0024); `config_not_found` (auto-generated) goes on → `lovelace/config/save` → `lovelace/config`, stored as the baseline |
+| Read | `lovelace/dashboards/list` (an entry `lovelace` that is not `mode: storage`, i.e. a YAML-mode default dashboard → error) + `lovelace/config` (`force: true`; `config_not_found` → `config` null, so the next apply saves it). A config equal to the baseline keeps the prior `config` |
+| Update | `lovelace/config/save`, then `lovelace/config` for a new baseline |
+| Delete | `lovelace/config/delete`, which resets the dashboard to the auto-generated one (`config_not_found` counts as deleted) |
+
+Since Home Assistant 2026.x (checked in 2026.9.4), a default dashboard with a saved config is
+migrated at startup to an ordinary storage dashboard listed as `lovelace`. Commands without
+`url_path` address that dashboard when it exists, so this resource keeps working across the
+migration. A fresh instance has no `lovelace` entry until the migration runs.

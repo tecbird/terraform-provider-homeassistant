@@ -54,7 +54,7 @@ resource "homeassistant_entity_settings" "signal" {
 - `hidden` (Boolean) Whether the user hides the entity. Reads `false` when it is visible or hidden by its integration. `false` unhides an entity the user hid, but leaves one hidden by its integration hidden.
 - `icon` (String) Icon that overrides the integration's, e.g. `mdi:ceiling-light`.
 - `labels` (Set of String) IDs of the labels on the entity. When set, this is the complete list: labels added elsewhere are removed.
-- `name` (String) Name that overrides the integration's. Unsetting it goes back to the integration's name.
+- `name` (String) Name that overrides the integration's. Unsetting it goes back to the integration's name. Since Home Assistant 2026.11, Home Assistant shows the device name in front of it, as it does for the integration's name, unless the entity has an area of its own. Leave the device name out then (`Power`, not `Kitchen Lamp Power`).
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
 
 ### Read-Only
