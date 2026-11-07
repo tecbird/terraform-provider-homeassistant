@@ -273,7 +273,8 @@ flow ends with the abort `reconfigure_successful`.
   forgotten, as above.
 
 Reconfigure flows show the fields of the create flow, but not under the same `step_id`s
-(`forecast_solar`: `user`, then `reconfigure`), and not always all of them (an AI integration's
+(`forecast_solar` in HA 2026.6: `user`, then `reconfigure`; in HA 2026.11: `user` and `plane`,
+then `reconfigure` and `reconfigure_plane`), and not always all of them (an AI integration's
 `init` drops `name`). So the reconfigure flow answers each form by its fields, from the same steps:
 
 ```
@@ -300,7 +301,9 @@ title), deletes it outside Tofu so it is created again, and reconfigures the new
 test imports the plane with `-generate-config-out` and checks that the generated configuration
 plans no changes, that a replacement without steps fails, and that writing and removing the steps
 neither reconfigures nor replaces it. Replacement of a type without a reconfigure flow is
-unit-tested only.
+unit-tested only. HA 2026.11 moved the plane's fields from the form `user` to a second form
+`plane`, after `user` chooses where the angles come from; the tests look at the first form and
+write the steps for the layout they find.
 
 ## `data.homeassistant_integration`
 

@@ -21,6 +21,54 @@ import (
 // do not contact the service, and they work the same in every release of the support window. The
 // config flow creates the entry with one plane. A second plane needs an API key in the entry's
 // options, so the tests add planes only while the entry has none. A plane has a reconfigure flow.
+// The flows ask for a plane in one of two layouts; see solarLayout.
+
+// solarLayout is how forecast_solar's flows ask for a plane. In HA 2026.6, the form `user` has the
+// plane's fields. In HA 2026.11, `user` only chooses where the angles come from (defaults: fixed
+// values), and the plane's fields follow in the form `plane`; the reconfigure flow likewise has
+// `reconfigure`, then `reconfigure_plane`, which the fields of `plane` answer.
+type solarLayout struct{ split bool }
+
+// detectSolarLayout starts forecast_solar's config flow, looks at its first form, and aborts it.
+func detectSolarLayout(t *testing.T) solarLayout {
+	t.Helper()
+	ctx := context.Background()
+	rest := haClient(t).REST
+	var res struct {
+		FlowID     string `json:"flow_id"`
+		DataSchema []struct {
+			Name string `json:"name"`
+		} `json:"data_schema"`
+	}
+	if err := rest.Do(ctx, "POST", "config/config_entries/flow", map[string]any{"handler": "forecast_solar"}, &res); err != nil {
+		t.Fatal(err)
+	}
+	if err := rest.Do(ctx, "DELETE", "config/config_entries/flow/"+res.FlowID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.DataSchema {
+		if f.Name == "modules_power" {
+			return solarLayout{}
+		}
+	}
+	return solarLayout{split: true}
+}
+
+// planeStep is the step_id of the form with the plane's fields.
+func (l solarLayout) planeStep() string {
+	if l.split {
+		return "plane"
+	}
+	return "user"
+}
+
+// steps is the HCL of a steps object that creates a plane with fields.
+func (l solarLayout) steps(fields string) string {
+	if l.split {
+		return "{\n    user  = {}\n    plane = { " + fields + " }\n  }"
+	}
+	return "{\n    user = { " + fields + " }\n  }"
+}
 
 // checkOnlyPlane checks that the entry has exactly one plane in HA, the one with the ID that id
 // returns, titled title.
@@ -46,12 +94,22 @@ func configSubentries(t *testing.T) client.ConfigSubentries {
 func solarEntry(t *testing.T) (entryID, planeID string) {
 	t.Helper()
 	ctx := context.Background()
-	entryID, err := client.NewConfigFlows(haClient(t).REST).Run(ctx, "forecast_solar", "", []client.FlowStep{{
+	steps := []client.FlowStep{{
 		StepID: "user",
 		Data: map[string]any{
 			"latitude": 52.37, "longitude": 9.73, "declination": 25, "azimuth": 180, "modules_power": 10000,
 		},
-	}})
+	}}
+	if detectSolarLayout(t).split {
+		steps = []client.FlowStep{{StepID: "user", Data: map[string]any{}}, {
+			StepID: "plane",
+			Data: map[string]any{
+				"coordinates": map[string]any{"latitude": 52.37, "longitude": 9.73},
+				"declination": 25, "azimuth": 180, "modules_power": 10000,
+			},
+		}}
+	}
+	entryID, err := client.NewConfigFlows(haClient(t).REST).Run(ctx, "forecast_solar", "", steps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,25 +137,24 @@ func solarPlanes(t *testing.T, entryID string) []client.ConfigSubentry {
 
 // planeConfig is a homeassistant_integration_subentry "plane" of the entry. The power is sent as
 // sensitive data, which a plane does not need, but which shows the merge.
-func planeConfig(entryID string, declination, power int) string {
+func planeConfig(l solarLayout, entryID string, declination, power int) string {
 	return acctest.ProviderConfig + fmt.Sprintf(`
 resource "homeassistant_integration_subentry" "plane" {
   entry_id      = %q
   subentry_type = "plane"
-  steps = {
-    user = { declination = %d, azimuth = 180, modules_power = 1 }
-  }
+  steps         = %s
   sensitive_steps = {
-    user = { modules_power = %d }
+    %s = { modules_power = %d }
   }
 }
-`, entryID, declination, power)
+`, entryID, l.steps(fmt.Sprintf("declination = %d, azimuth = 180, modules_power = 1", declination)), l.planeStep(), power)
 }
 
 func TestAccIntegrationSubentry(t *testing.T) {
 	acctest.SharedInstance(t)
 	const addr = "homeassistant_integration_subentry.plane"
 	entryID, autoPlane := solarEntry(t)
+	layout := detectSolarLayout(t)
 	var planeID string
 
 	resource.Test(t, resource.TestCase{
@@ -112,7 +169,7 @@ func TestAccIntegrationSubentry(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				// A second plane needs an API key: HA aborts, and nothing is created.
-				Config:      planeConfig(entryID, 30, 5000),
+				Config:      planeConfig(layout, entryID, 30, 5000),
 				ExpectError: regexp.MustCompile(`subentry flow for plane of config entry \S+ aborted:\s+api_key_required`),
 			},
 			{
@@ -122,7 +179,7 @@ func TestAccIntegrationSubentry(t *testing.T) {
 						t.Fatalf("planes after the aborted flow = %+v, want only the first", planes)
 					}
 				},
-				Config:             planeConfig(entryID, 25, 10000),
+				Config:             planeConfig(layout, entryID, 25, 10000),
 				ResourceName:       addr,
 				ImportState:        true,
 				ImportStateId:      entryID + "/" + autoPlane,
@@ -148,7 +205,7 @@ func TestAccIntegrationSubentry(t *testing.T) {
 			},
 			{
 				// The steps cannot be read back, so writing them after the import only records them.
-				Config: planeConfig(entryID, 25, 10000),
+				Config: planeConfig(layout, entryID, 25, 10000),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
@@ -158,15 +215,15 @@ func TestAccIntegrationSubentry(t *testing.T) {
 				Check: resource.TestCheckResourceAttr(addr, "subentry_id", autoPlane),
 			},
 			{
-				Config: planeConfig(entryID, 25, 10000),
+				Config: planeConfig(layout, entryID, 25, 10000),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 			},
 			{
 				// A plane has a reconfigure flow: changed steps change it in place. Its reconfigure
-				// form has the step_id `reconfigure` and is answered from the fields of `user`.
-				Config: planeConfig(entryID, 30, 5000),
+				// forms have other step_ids and are answered by their fields (see solarLayout).
+				Config: planeConfig(layout, entryID, 30, 5000),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
@@ -182,7 +239,7 @@ func TestAccIntegrationSubentry(t *testing.T) {
 				),
 			},
 			{
-				Config: planeConfig(entryID, 30, 5000),
+				Config: planeConfig(layout, entryID, 30, 5000),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
@@ -195,7 +252,7 @@ func TestAccIntegrationSubentry(t *testing.T) {
 						t.Fatal(err)
 					}
 				},
-				Config: planeConfig(entryID, 30, 5000),
+				Config: planeConfig(layout, entryID, 30, 5000),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionCreate)},
 				},
@@ -216,7 +273,7 @@ func TestAccIntegrationSubentry(t *testing.T) {
 			},
 			{
 				// A created plane is reconfigured in place too.
-				Config: planeConfig(entryID, 35, 5000),
+				Config: planeConfig(layout, entryID, 35, 5000),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
 				},
@@ -251,7 +308,7 @@ import {
 }
 `, addr, entryID, planeID)
 	withSteps := strings.Replace(generated, "steps           = null",
-		"steps           = { user = { declination = 30, azimuth = 180, modules_power = 5000 } }", 1)
+		"steps           = "+detectSolarLayout(t).steps("declination = 30, azimuth = 180, modules_power = 5000"), 1)
 	samePlane := resource.ComposeAggregateTestCheckFunc(
 		resource.TestCheckResourceAttr(addr, "subentry_id", planeID),
 		checkOnlyPlane(t, entryID, func() string { return planeID }, title),
@@ -324,16 +381,14 @@ import {
 }
 
 // secretPlaneConfig is a plane with all its fields in sensitive_steps and no steps (ADR-0021).
-func secretPlaneConfig(entryID string, declination int) string {
+func secretPlaneConfig(l solarLayout, entryID string, declination int) string {
 	return acctest.ProviderConfig + fmt.Sprintf(`
 resource "homeassistant_integration_subentry" "secret" {
-  entry_id      = %q
-  subentry_type = "plane"
-  sensitive_steps = {
-    user = { declination = %d, azimuth = 180, modules_power = 2000 }
-  }
+  entry_id        = %q
+  subentry_type   = "plane"
+  sensitive_steps = %s
 }
-`, entryID, declination)
+`, entryID, l.steps(fmt.Sprintf("declination = %d, azimuth = 180, modules_power = 2000", declination)))
 }
 
 // A subentry with only sensitive_steps is created, reconfigured, and replaced like one with steps.
@@ -342,6 +397,7 @@ func TestAccIntegrationSubentry_SensitiveStepsOnly(t *testing.T) {
 	const addr = "homeassistant_integration_subentry.secret"
 	first, firstPlane := solarEntry(t)
 	second, secondPlane := solarEntry(t)
+	layout := detectSolarLayout(t)
 	// Without planes, the entries take a new one without an API key.
 	for entryID, planeID := range map[string]string{first: firstPlane, second: secondPlane} {
 		if err := configSubentries(t).Delete(context.Background(), entryID, planeID); err != nil {
@@ -363,7 +419,7 @@ func TestAccIntegrationSubentry_SensitiveStepsOnly(t *testing.T) {
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: secretPlaneConfig(first, 20),
+				Config: secretPlaneConfig(layout, first, 20),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionCreate)},
 				},
@@ -378,7 +434,7 @@ func TestAccIntegrationSubentry_SensitiveStepsOnly(t *testing.T) {
 			},
 			{
 				// A changed secret reconfigures the plane in place, as changed steps do.
-				Config: secretPlaneConfig(first, 40),
+				Config: secretPlaneConfig(layout, first, 40),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
 				},
@@ -390,7 +446,7 @@ func TestAccIntegrationSubentry_SensitiveStepsOnly(t *testing.T) {
 			},
 			{
 				// Another entry replaces the plane; the create of the replacement has only secrets.
-				Config: secretPlaneConfig(second, 40),
+				Config: secretPlaneConfig(layout, second, 40),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate)},
 				},
