@@ -281,7 +281,8 @@ then `reconfigure` and `reconfigure_plane`), and not always all of them (an AI i
 ReconfigureAnswer(steps):
   on every form:
     a field takes its value from steps[form.step_id], else from any step that has it
-    a section takes its fields from the nested object under its name, else from the top level
+    a section takes its fields from the top level, with the nested object under its name
+      merged over it (the nested object wins)
     fields the form does not have are left out; so are fields no step has (HA keeps their value)
     a field that two other steps set to different values, and steps[form.step_id] lacks → abort + error
     a required field without default that no step has → abort + error
@@ -346,7 +347,8 @@ FieldAnswer(values, files):
   on every form:
     fields = form.data_schema; a field of type "expandable" (a section) has its own schema
     answer  = each field present in values (a section → a nested object of its own fields,
-              looked up in values[section] if that is an object, else in values)
+              looked up in values, with values[section] merged over them if that is an
+              object; the nested object wins)
     a file field (selector "file") present in files → POST /api/file_upload, answer the file_id
     a required field without a default that values lacks → abort + error naming it
     the same step_id with the same fields as an earlier form → abort + error (no loops)
