@@ -279,7 +279,8 @@ func (e *FlowFieldAmbiguousError) Error() string {
 // data_schema, as FieldAnswer does: a field takes its value from the step of the form's step_id,
 // else from whichever step has it. Fields the form does not have are left out, and fields no step
 // has too, so HA keeps their value. A field that several other steps give different values is an
-// error, as is the same form a second time.
+// error, as is the same form a second time. A menu is answered by the step of its step_id alone,
+// as in a create flow.
 func reconfigureAnswer(steps []FlowStep) FlowAnswer {
 	byID := map[string]map[string]any{}
 	pool := map[string]any{}
@@ -308,6 +309,10 @@ func reconfigureAnswer(steps []FlowStep) FlowAnswer {
 		seen[key] = true
 
 		own := byID[form.StepID]
+		if form.Menu {
+			// A menu's choice is its own step's next_step_id; other steps chose in other menus.
+			return maps.Clone(own), nil
+		}
 		for _, n := range append(names, sectionNames(form.Fields)...) {
 			if _, set := own[n]; ambiguous[n] && !set {
 				return nil, &FlowFieldAmbiguousError{Flow: form.Flow, StepID: form.StepID, Field: n, Steps: owners[n]}

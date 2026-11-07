@@ -493,6 +493,30 @@ func TestReconfigureAnswer(t *testing.T) {
 	}
 }
 
+// A menu takes its choice only from the step of its own step_id, as in a create flow: the
+// next_step_id of other steps chose in other menus.
+func TestReconfigureAnswerMenu(t *testing.T) {
+	steps := []FlowStep{
+		{StepID: "user", Data: map[string]any{MenuNextStep: "sensor"}},
+		{StepID: "reconfigure", Data: map[string]any{MenuNextStep: "binary_sensor"}},
+	}
+	menu := func(stepID string) FlowForm {
+		return FlowForm{Flow: "reconfigure flow", StepID: stepID, Menu: true, MenuOptions: []string{"binary_sensor", "sensor"}}
+	}
+	got, err := reconfigureAnswer(steps)(t.Context(), menu("reconfigure"))
+	if want := map[string]any{MenuNextStep: "binary_sensor"}; err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("answer = %v, %v; want %v", got, err, want)
+	}
+
+	// Without a step of its step_id, the menu gets no choice, and the driver names its options.
+	form := menu("pick")
+	got, err = reconfigureAnswer(steps)(t.Context(), form)
+	var choice *FlowMenuChoiceError
+	if err != nil || !errors.As(checkMenuChoice(form, got), &choice) || choice.Choice != nil {
+		t.Errorf("answer = %v, %v; want no choice", got, err)
+	}
+}
+
 // shortIdentifyBackoff shortens the waits between the lists after a create for the test.
 func shortIdentifyBackoff(t *testing.T) {
 	old := identifyBackoff

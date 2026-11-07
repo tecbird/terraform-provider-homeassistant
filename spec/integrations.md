@@ -285,6 +285,7 @@ ReconfigureAnswer(steps):
     fields the form does not have are left out; so are fields no step has (HA keeps their value)
     a field that two other steps set to different values, and steps[form.step_id] lacks → abort + error
     a required field without default that no step has → abort + error
+  on a menu: steps[form.step_id] (its next_step_id), as in a create flow; none → abort + error
     the same step_id with the same fields as an earlier form → abort + error (no loops)
 ```
 
