@@ -266,3 +266,15 @@ resource "homeassistant_mqtt" "imported" {
 		},
 	})
 }
+
+func TestAccMQTT_upgrade(t *testing.T) {
+	const addr = "homeassistant_mqtt.test"
+	acctest.StartMosquitto(t)
+	acctest.UpgradeTest(t, mqttConfig(`
+  discovery_prefix = "acc"
+  birth_message    = { topic = "acc/status" }
+`),
+		resource.TestCheckResourceAttr(addr, "broker", "localhost"),
+		resource.TestCheckResourceAttr(addr, "discovery_prefix", "acc"),
+	)
+}

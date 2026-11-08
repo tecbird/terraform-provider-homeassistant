@@ -42,6 +42,9 @@ label, entity, and device registries.
 `light.bedroom_ceiling`. It holds metadata (name override, area, labels, hidden, disabled), not
 state.
 
+**Registry ID** — The `id` of an entity registry entry, a random hex string. Unlike the entity
+ID, it survives a rename. It identifies `homeassistant_entity_settings` (ADR-0025).
+
 **Integration** — An HA component that connects to a service or device family (ESPHome, MQTT,
 Hue, …).
 
@@ -50,17 +53,27 @@ Hue, …).
 with (host, password, …) **cannot be read back** via the API.
 
 **Config flow** — The step-by-step wizard (exposed over REST) that creates a config entry. Each
-step returns either a `form` (with a `step_id` and data schema), `create_entry`, or `abort`.
+step returns either a `form` (with a `step_id` and data schema), a `menu`, `create_entry`, or
+`abort`.
+
+**Menu** — A config-flow step that offers a choice of next steps (`menu_options`) instead of
+fields. It is answered with the one field `next_step_id`, the `step_id` of the chosen option.
 
 **Reconfigure flow** — A config flow started with an existing `entry_id`. It changes a config
 entry's data in place. Only some integrations implement it.
+
+**Config subentry** — A part of a config entry that can be added and removed on its own, e.g. a
+plane of `forecast_solar` or a conversation agent of an AI integration. It has a `subentry_type`
+and an HA-assigned `subentry_id`, and is created by a **subentry flow**, which works like a
+config flow. Like a config entry's, its input data cannot be read back. Some subentry types have
+a **subentry reconfigure flow**, which changes the data in place and keeps the `subentry_id`.
 
 **Options flow** — A separate flow that changes a config entry's *options*, as opposed to its
 data. It is not used for changing connection data.
 
 **Helper** — A user-defined stateful entity that automations can read and write:
 `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`,
-`input_button`.
+`input_button`, `counter`, `timer`, `schedule`.
 
 **Automation** — Triggers, conditions, and actions that HA runs on its own. It is identified by a
 config `id`, and its entity ID is derived from its alias — not from its id.
@@ -78,6 +91,10 @@ ADR-0012.
 
 **Dashboard** — A Lovelace dashboard. It has *metadata* (`url_path`, title, icon, sidebar
 visibility) and a *config* (views → sections → cards).
+
+**Default dashboard** — The built-in "Overview" dashboard. It has no `url_path` (the `lovelace/*`
+commands address it by leaving the field out), no metadata the provider manages, and only a
+*config*. Without a saved config, HA generates it automatically.
 
 **`url_path`** — The URL segment of a dashboard. It must contain a hyphen.
 

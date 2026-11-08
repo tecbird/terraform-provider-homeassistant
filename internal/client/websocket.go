@@ -161,7 +161,7 @@ func (c *WSClient) connection(ctx, parent context.Context) (*wsConn, error) {
 			c.dialing = nil
 			if d.err == nil {
 				c.conn = d.conn
-				go c.readLoop(d.conn)
+				go c.readLoop(d.conn) // #nosec G118 -- lives as long as the shared connection, not one command
 			}
 			close(d.done)
 			c.mu.Unlock()
@@ -265,13 +265,14 @@ func (c *WSClient) readLoop(conn *wsConn) {
 		if msg.Type != "result" {
 			continue // events: the client holds no subscriptions
 		}
+		// Delivered under mu (ch has room for the one result), so a waiter that gives up and
+		// removes its id under mu either finds the result in ch or gets none (await).
 		conn.mu.Lock()
-		ch, ok := conn.pending[msg.ID]
-		delete(conn.pending, msg.ID)
-		conn.mu.Unlock()
-		if ok {
+		if ch, ok := conn.pending[msg.ID]; ok {
+			delete(conn.pending, msg.ID)
 			ch <- msg
 		}
+		conn.mu.Unlock()
 	}
 }
 
@@ -296,11 +297,32 @@ func (conn *wsConn) fail(cause error) {
 	_ = conn.ws.CloseNow()
 }
 
+// write sends msg within ctx's deadline, but ignores ctx's cancellation. coder/websocket closes the
+// connection when the ctx of a write ends, and stops watching that ctx only after the frame is
+// sent, so a caller who cancels just as its command goes out would close the connection that
+// every command shares. A deadline that passes mid-write still ends it: the command then fails
+// the connection anyway (Command).
+func (conn *wsConn) write(ctx context.Context, msg map[string]any) error {
+	wctx := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		wctx, cancel = context.WithDeadline(wctx, deadline)
+		defer cancel() // only after Write returned, when the library no longer watches wctx
+	}
+	return wsjson.Write(wctx, conn.ws, msg)
+}
+
 // roundTrip assigns the next id, sends msg, and waits for the matching result.
 func (conn *wsConn) roundTrip(ctx context.Context, msg map[string]any) (wsMessage, error) {
 	ch := make(chan wsMessage, 1)
 
 	conn.writeMu.Lock()
+	// A command cancelled while it waited for its turn is not sent: HA could carry out a create
+	// whose result no one reads.
+	if err := ctx.Err(); err != nil {
+		conn.writeMu.Unlock()
+		return wsMessage{}, err
+	}
 	conn.mu.Lock()
 	if conn.err != nil {
 		err := conn.err
@@ -313,7 +335,7 @@ func (conn *wsConn) roundTrip(ctx context.Context, msg map[string]any) (wsMessag
 	msg["id"] = id
 	conn.pending[id] = ch
 	conn.mu.Unlock()
-	err := wsjson.Write(ctx, conn.ws, msg)
+	err := conn.write(ctx, msg)
 	conn.writeMu.Unlock()
 
 	if err != nil {
@@ -325,19 +347,38 @@ func (conn *wsConn) roundTrip(ctx context.Context, msg map[string]any) (wsMessag
 		return wsMessage{}, fmt.Errorf("%w: %w", ErrConnectionLost, err)
 	}
 
+	return conn.await(ctx, id, ch)
+}
+
+// await waits for the result of command id on ch, or for ctx to end. A result that has arrived by
+// the time ctx ends is returned, not dropped: the command ran in HA, and its result (e.g. the ID of
+// a created object) is needed. select alone would pick either at random.
+func (conn *wsConn) await(ctx context.Context, id int64, ch chan wsMessage) (wsMessage, error) {
 	select {
 	case reply, ok := <-ch:
-		if !ok {
-			conn.mu.Lock()
-			err := conn.err
-			conn.mu.Unlock()
-			return wsMessage{}, err
-		}
-		return reply, nil
+		return conn.received(reply, ok)
 	case <-ctx.Done():
 		conn.mu.Lock()
 		delete(conn.pending, id)
 		conn.mu.Unlock()
+		// readLoop delivers under mu, so after that delete a result is in ch or never comes.
+		select {
+		case reply, ok := <-ch:
+			if ok {
+				return reply, nil
+			}
+		default:
+		}
 		return wsMessage{}, ctx.Err()
 	}
+}
+
+// received returns the result read from ch, or the connection's error if ch was closed.
+func (conn *wsConn) received(reply wsMessage, ok bool) (wsMessage, error) {
+	if ok {
+		return reply, nil
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return wsMessage{}, conn.err
 }

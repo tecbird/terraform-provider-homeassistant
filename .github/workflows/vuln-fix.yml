@@ -1,0 +1,166 @@
+name: Vulnerability fixes
+
+# When a security gate (the Trivy and govulncheck jobs in security.yml) would fail on main because a
+# dependency or the Go toolchain has a known vulnerability with a fix, bump exactly that module to
+# the lowest fixed version and open one pull request, like a Dependabot security update. Indirect
+# dependencies move only when a gate forces it; Dependabot updates only direct ones (ADR-0027).
+#
+# Two jobs: `fix` runs the new dependency code (build, tests) with a read-only token and no stored
+# credentials; `publish` holds the write token and runs no Go code, so a compromised release cannot
+# push with it.
+# The pull request is opened with the workflow's own token, so GitHub starts no workflows for it.
+# This workflow starts CI, Acceptance tests and Security on the branch itself; their checks attach
+# to its head commit and count for the pull request. Needs the repository setting "Allow GitHub
+# Actions to create and approve pull requests".
+# Third-party actions are pinned to a commit SHA (tag in the comment) against tag hijacking.
+
+on:
+  schedule:
+    # New advisories appear without any change here.
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Security]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  BRANCH: deps/vuln-fixes
+
+jobs:
+  fix:
+    # After Security, only when it failed on main.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      bumped: ${{ steps.changed.outputs.bumped }}
+      base: ${{ steps.changed.outputs.base }}
+      patch: ${{ steps.changed.outputs.patch }}
+      title: ${{ steps.changed.outputs.title }}
+      body: ${{ steps.changed.outputs.body }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: trivy (what the gate fails on)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: json
+          output: ${{ runner.temp }}/trivy.json
+      - name: govulncheck
+        # JSON output exits 0 with findings; the script keeps only the ones the gate fails on.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format json ./... > "$RUNNER_TEMP/govulncheck.json"
+      - name: bump
+        run: scripts/vuln-fix.sh "$RUNNER_TEMP/trivy.json" "$RUNNER_TEMP/govulncheck.json" "$RUNNER_TEMP/pr"
+      - name: check whether anything changed
+        id: changed
+        run: |
+          if git diff --quiet; then echo "bumped=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          {
+            echo "bumped=true"
+            echo "base=$(git rev-parse HEAD)"
+            echo "patch=$(git diff --binary | base64 -w0)"
+            echo "title=$(cat "$RUNNER_TEMP/pr/title")"
+            echo "body=$(base64 -w0 "$RUNNER_TEMP/pr/body")"
+          } >> "$GITHUB_OUTPUT"
+      # setup-go installs the go.mod `toolchain` and sets GOTOOLCHAIN=local, so a bumped toolchain
+      # needs installing again; otherwise the checks below run on the vulnerable one. setup-go
+      # ignores the `toolchain` line while GOTOOLCHAIN is "local", hence the empty value here.
+      - name: install the bumped toolchain
+        if: steps.changed.outputs.bumped == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        env:
+          GOTOOLCHAIN: ""
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: build and unit tests
+        if: steps.changed.outputs.bumped == 'true'
+        run: |
+          go build ./...
+          go test -short ./...
+      # The gates themselves, on the bumped tree: a bump that leaves one red opens no pull request.
+      - name: verify govulncheck
+        if: steps.changed.outputs.bumped == 'true'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - name: verify trivy
+        if: steps.changed.outputs.bumped == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  publish:
+    needs: fix
+    if: needs.fix.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the branch
+      pull-requests: write # open or update the pull request
+      actions: write # start the checks on the branch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.fix.outputs.base }}
+      - name: open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCH: ${{ needs.fix.outputs.patch }}
+          TITLE: ${{ needs.fix.outputs.title }}
+          BODY: ${{ needs.fix.outputs.body }}
+        run: |
+          base64 -d <<<"$BODY" > "$RUNNER_TEMP/body"
+          base64 -d <<<"$PATCH" | git apply --index
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git commit -q -F - <<EOF
+          $TITLE
+
+          $(cat "$RUNNER_TEMP/body")
+          EOF
+          # Push only when the content differs from the open branch, so an unchanged fix does not
+          # restart its checks every day. A changed main changes the content too: the branch is
+          # rebuilt on top of it.
+          if git fetch -q origin "$BRANCH" 2>/dev/null && git diff --quiet FETCH_HEAD HEAD; then
+            echo "The branch $BRANCH already has this fix."
+            head="$(git rev-parse FETCH_HEAD)"
+          else
+            git push --force origin "$BRANCH"
+            head="$(git rev-parse HEAD)"
+          fi
+          # Start each check workflow that has no run for the branch's head yet, so a dispatch that
+          # failed once is made up on the next run.
+          for wf in ci.yml acceptance.yml security.yml; do
+            if [ "$(gh run list --workflow "$wf" --commit "$head" --json databaseId --jq length)" = 0 ]; then
+              gh workflow run "$wf" --ref "$BRANCH"
+            fi
+          done
+          pr="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$pr" ]; then
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/body"
+          else
+            gh pr edit "$pr" --title "$TITLE" --body-file "$RUNNER_TEMP/body"
+          fi

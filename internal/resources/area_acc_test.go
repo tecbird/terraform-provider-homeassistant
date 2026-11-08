@@ -289,3 +289,15 @@ resource "homeassistant_area" "clash" {
 		},
 	})
 }
+
+func TestAccArea_upgrade(t *testing.T) {
+	const addr = "homeassistant_area.test"
+	acctest.SharedInstance(t)
+	postSensor(t, "sensor.acc_area_temperature", "temperature", "°C")
+	postSensor(t, "sensor.acc_area_humidity", "humidity", "%")
+	acctest.UpgradeTest(t, areaFull("Acc Area", "a", `["Lounge", "Den"]`),
+		resource.TestCheckResourceAttr(addr, "id", "acc_area"),
+		resource.TestCheckResourceAttr(addr, "floor_id", "acc_area_floor_a"),
+		resource.TestCheckResourceAttr(addr, "labels.#", "1"),
+	)
+}
