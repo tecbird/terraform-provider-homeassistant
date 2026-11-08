@@ -241,3 +241,17 @@ resource "homeassistant_label" "dup" {
 		},
 	})
 }
+
+func TestAccLabel_upgrade(t *testing.T) {
+	const addr = "homeassistant_label.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+`
+resource "homeassistant_label" "test" {
+  name  = "Acc Label"
+  color = "indigo"
+  icon  = "mdi:tag"
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc_label"),
+		resource.TestCheckResourceAttr(addr, "color", "indigo"),
+	)
+}

@@ -1,6 +1,6 @@
 # 21. Integration steps are two dynamic objects keyed by `step_id`
 
-Date: 2026-10-04 · Status: Accepted · Supersedes the step-block point of ADR-0014
+Date: 2026-10-04 · Status: Accepted · Supersedes the step-block point of ADR-0014 · Replacement point superseded by ADR-0028
 
 ## Context
 

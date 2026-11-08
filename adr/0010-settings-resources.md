@@ -1,6 +1,6 @@
 # 10. Settings resources are field-granular overlays
 
-Date: 2026-10-03 · Status: Accepted
+Date: 2026-10-03 · Status: Accepted · Entity resource ID superseded by ADR-0025
 
 ## Context
 

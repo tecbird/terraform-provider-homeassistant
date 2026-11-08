@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  # Started by vuln-fix.yml for its pull request, which its token cannot trigger (ADR-0027).
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -44,19 +46,20 @@ jobs:
 
   # PR branches are rebased onto main, never merged with it: main gets one merge commit per PR,
   # and the branch itself stays linear. (A ruleset can't express this: GitHub's "linear history"
-  # rule also counts main's own merge commits.)
+  # rule also counts main's own merge commits.) Started by hand on a branch, it checks that branch
+  # against main.
   rebased:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           # The PR head itself, not the merge commit GitHub creates for testing it.
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - name: no merge commits on the branch
         env:
-          BASE: ${{ github.event.pull_request.base.ref }}
+          BASE: ${{ github.event.pull_request.base.ref || 'main' }}
         run: |
           merges="$(git rev-list --merges "origin/$BASE..HEAD")"
           if [ -n "$merges" ]; then

@@ -6,8 +6,72 @@ Breaking changes are marked **Breaking** (ADR-0018, ADR-0019).
 
 ## Unreleased
 
-- Supports Home Assistant 2026.5 to 2026.10, the six most recent releases (ADR-0003). CI tests
-  2026.5.4 and 2026.10.0.
+- Supports Home Assistant 2026.6 to 2026.11, the six most recent releases (ADR-0003). CI tests
+  2026.6.4 and 2026.11.0.
+- Home Assistant 2026.11 shows the device name in front of an entity name set by the user,
+  unless the entity has an area of its own, and its upgrade strips the device name from the front
+  of those entities' stored names. A `homeassistant_entity_settings` whose `name` starts with the
+  device name then plans a change after the upgrade: drop the device name from `name` (`Power`,
+  not `Kitchen Lamp Power`) instead of applying it. Entities with an area of their own keep their
+  stored name and plan no change.
+- New resource `homeassistant_energy_preferences`: the Energy dashboard's sources and tracked devices,
+  as dynamic `energy_sources`, `device_consumption` and `device_consumption_water`. There is one per
+  instance. Create fails if non-empty preferences already exist (import them), and destroy resets
+  them to empty lists (#63).
+- New resources `homeassistant_counter`, `homeassistant_timer` and `homeassistant_schedule`, with
+  import and plan-time validation. They are typed like the `input_*` helpers. Weekdays of a
+  schedule are attributes (`monday` to `sunday`), each a list of `{ from, to }` time ranges. Times
+  and a timer's `duration` must be written the way Home Assistant stores them (`07:00:00`,
+  `0:05:00`). A time range's custom `data` is an optional JSON string (`data = jsonencode({ price = 0.12 })`),
+  compared by value, so key order and number spelling never show as a diff.
+- Security: the provider binary is built with Go 1.26.9 (`toolchain` in `go.mod`) instead of
+  1.26.0, and `google.golang.org/grpc` (1.83.2), `golang.org/x/net` (0.60.0),
+  `golang.org/x/crypto` (0.57.0) and `github.com/moby/go-archive` (0.3.0, tests only) are
+  updated. `govulncheck` reported reachable vulnerabilities before (11 in modules, at least 10 in
+  the Go 1.26.0 standard library: HTTP/2 memory and CPU exhaustion and crashes in the plugin's
+  gRPC server, `crypto/tls`, `net/url`) and none after.
+- Security: `github.com/klauspost/compress` (tests only) is updated to 1.20.2 for GO-2026-6865, a
+  panic on two-block zstd frames that `govulncheck` reports as reachable.
+- CI: a `Security` workflow runs `govulncheck`, `gosec`, CodeQL and Trivy (dependency CVEs and
+  committed secrets) on every PR, on `main` and weekly. Reachable vulnerabilities, `gosec` findings
+  of medium severity or above, and fixable CRITICAL/HIGH Trivy findings fail the run; everything
+  else goes to code scanning alerts.
+- Fixed: reading the device registry no longer fails when Home Assistant stores `sw_version`,
+  `hw_version` or an `identifiers` component as a number, as some integrations do (a Broadlink
+  firmware version, a numeric identifier component); those values are exposed as strings (#79).
+- New resource `homeassistant_default_dashboard`: the config of the built-in default ("Overview")
+  dashboard, which has no `url_path` and so could not be managed or imported with
+  `homeassistant_dashboard`. Import ID `default`. Create fails if the dashboard already has a
+  saved config (import it instead); destroy deletes the saved config, so Home Assistant
+  generates the dashboard automatically again (#66).
+- `homeassistant_integration`: config flows that show a menu, e.g. the template and group
+  helpers. The menu's step answers with `next_step_id`, the chosen option:
+  `steps = { user = { next_step_id = "sensor" }, sensor = { ... } }` (#65).
+- New resource `homeassistant_integration_options`: sets the options of a config entry through
+  its options flow, e.g. a threshold's limits or a utility meter's source sensor, for entries made
+  in the UI or by `homeassistant_integration`. Only the fields in `steps` are managed. Home
+  Assistant shows only the flow's first form without saving, so import reads the options of the
+  first form, and only changes to its fields made outside Tofu show up as drift (#64).
+- Fixed: cancelling a Home Assistant WebSocket command just as it was sent (e.g. Ctrl-C during
+  an apply) could close the connection that other commands share, failing them with
+  `ErrConnectionLost`; the cancel now ends only that command, and a command cancelled before
+  it is sent is not sent.
+- New resource `homeassistant_integration_subentry`: creates a config subentry, e.g. a
+  `forecast_solar` plane or a conversation agent of an AI integration, by answering its subentry
+  flow with `steps`, like `homeassistant_integration`. Changed `steps` or `sensitive_steps` run
+  the subentry's reconfigure flow where its type has one, which keeps the subentry and its devices
+  and entities; other types are replaced. Import by `<entry_id>/<subentry_id>` (#67). `steps` is
+  optional, so `tofu plan -generate-config-out` after an import writes a configuration that plans
+  without errors (`steps = null`); only creating or replacing a subentry needs `steps` or
+  `sensitive_steps`. While both are null before or after a change, as after an import, the steps
+  are only recorded or forgotten, without a reconfigure or a replacement.
+- `homeassistant_integration`: `steps` is optional, so `tofu plan -generate-config-out` after an
+  import writes a configuration that plans without errors (`steps = null`). Only creating or
+  replacing an entry needs a step, in `steps` or, for a form of secrets only, in
+  `sensitive_steps`; a plan that would do it without one fails before anything is deleted.
+  Removing recorded steps from the configuration plans an in-place update that only forgets them,
+  instead of failing. After upgrading, a state with recorded steps plans no changes, with or
+  without `ignore_changes`.
 
 ## 1.0.0
 

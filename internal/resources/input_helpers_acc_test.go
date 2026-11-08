@@ -361,3 +361,87 @@ resource "homeassistant_input_button" "test" {
 		},
 	})
 }
+
+func TestAccInputNumber_upgrade(t *testing.T) {
+	const addr = "homeassistant_input_number.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+`
+resource "homeassistant_input_number" "test" {
+  name                = "Acc Number"
+  icon                = "mdi:thermometer"
+  min                 = -10
+  max                 = 30.5
+  step                = 0.5
+  initial             = 21
+  mode                = "box"
+  unit_of_measurement = "°C"
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc_number"),
+		resource.TestCheckResourceAttr(addr, "entity_id", "input_number.acc_number"),
+		resource.TestCheckResourceAttr(addr, "max", "30.5"),
+	)
+}
+
+func TestAccInputText_upgrade(t *testing.T) {
+	const addr = "homeassistant_input_text.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+`
+resource "homeassistant_input_text" "test" {
+  name    = "Acc Text"
+  min     = 2
+  max     = 255
+  initial = "hello"
+  pattern = "^(?=.*[a-z])\\w+$"
+  mode    = "password"
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc_text"),
+		resource.TestCheckResourceAttr(addr, "entity_id", "input_text.acc_text"),
+		resource.TestCheckResourceAttr(addr, "pattern", `^(?=.*[a-z])\w+$`),
+	)
+}
+
+func TestAccInputSelect_upgrade(t *testing.T) {
+	const addr = "homeassistant_input_select.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+`
+resource "homeassistant_input_select" "test" {
+  name    = "Acc Select"
+  icon    = "mdi:thermostat"
+  options = ["off", "eco", "comfort"]
+  initial = "eco"
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc_select"),
+		resource.TestCheckResourceAttr(addr, "entity_id", "input_select.acc_select"),
+		resource.TestCheckResourceAttr(addr, "options.#", "3"),
+	)
+}
+
+func TestAccInputDatetime_upgrade(t *testing.T) {
+	const addr = "homeassistant_input_datetime.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+`
+resource "homeassistant_input_datetime" "test" {
+  name     = "Acc Datetime"
+  has_date = true
+  has_time = true
+  initial  = "2026-12-24 18:30:00"
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc_datetime"),
+		resource.TestCheckResourceAttr(addr, "entity_id", "input_datetime.acc_datetime"),
+		resource.TestCheckResourceAttr(addr, "initial", "2026-12-24 18:30:00"),
+	)
+}
+
+func TestAccInputButton_upgrade(t *testing.T) {
+	const addr = "homeassistant_input_button.test"
+	acctest.UpgradeTest(t, acctest.ProviderConfig+`
+resource "homeassistant_input_button" "test" {
+  name = "Acc Button"
+  icon = "mdi:bell"
+}
+`,
+		resource.TestCheckResourceAttr(addr, "id", "acc_button"),
+		resource.TestCheckResourceAttr(addr, "entity_id", "input_button.acc_button"),
+		resource.TestCheckResourceAttr(addr, "icon", "mdi:bell"),
+	)
+}
